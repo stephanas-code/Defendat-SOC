@@ -1,0 +1,49 @@
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Node & Frontend Dependencies (All directories)
+node_modules/
+**/node_modules/
+dist/
+.vite/
+build/
+
+# Large Datasets, Databases & Archives
+*.zip
+*.rar
+*.tar.gz
+*.7z
+*.csv
+*.npy
+*.onnx.data
+*.mmdb
+data/*.mmdb
+artifacts.zip
+backup.sql
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+
+# Environment & Credentials
+.env
+.env.local
+.env.production
+
+# Temporary & Lock Files
+~$*.docx
+*.tmp
+*.log
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.devin/

@@ -1,0 +1,56 @@
+# 44-Feature Flow Schema
+
+The sensor emits **44 CICFlowMeter-style bidirectional flow features** under the `features` JSON field.
+
+These names are the contract between:
+
+- [sensor/sensor/features.py](sensor/sensor/features.py)
+- [backend/app/detection/features.py](backend/app/detection/features.py)
+
+## Feature keys
+
+- `flow_duration_ms`
+- `tot_fwd_pkts`
+- `tot_bwd_pkts`
+- `totlen_fwd_pkts`
+- `totlen_bwd_pkts`
+- `fwd_pkt_len_max`
+- `fwd_pkt_len_min`
+- `fwd_pkt_len_mean`
+- `fwd_pkt_len_std`
+- `bwd_pkt_len_max`
+- `bwd_pkt_len_min`
+- `bwd_pkt_len_mean`
+- `bwd_pkt_len_std`
+- `flow_byts_s`
+- `flow_pkts_s`
+- `flow_iat_mean`
+- `flow_iat_std`
+- `flow_iat_max`
+- `flow_iat_min`
+- `fwd_iat_total`
+- `fwd_iat_mean`
+- `fwd_iat_std`
+- `fwd_iat_max`
+- `fwd_iat_min`
+- `bwd_iat_total`
+- `bwd_iat_mean`
+- `bwd_iat_std`
+- `bwd_iat_max`
+- `bwd_iat_min`
+- `fwd_psh_flags`
+- `bwd_psh_flags`
+- `fwd_urg_flags`
+- `bwd_urg_flags`
+- `fwd_header_len`
+- `bwd_header_len`
+- `fwd_pkts_s`
+- `bwd_pkts_s`
+- `pkt_len_min`
+- `pkt_len_max`
+- `pkt_len_mean`
+- `pkt_len_std`
+- `fin_flag_cnt`
+- `syn_flag_cnt`
+- `rst_flag_cnt`
+- `ack_flag_cnt`
