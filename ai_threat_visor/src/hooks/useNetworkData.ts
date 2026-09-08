@@ -285,7 +285,12 @@ export function useNetworkData() {
     ws.onmessage = (event) => {
       if (!isCapturing) return;
       try {
-        const payload = JSON.parse(event.data) as ApiAlert;
+        const data = JSON.parse(event.data);
+        if (data && (data.action === 'clear' || data.type === 'clear')) {
+          setAlerts([]);
+          return;
+        }
+        const payload = data as ApiAlert;
         const mapped = toAlert(payload);
         setAlerts((prev) => [mapped, ...prev].slice(0, 200));
       } catch (err) {
@@ -392,6 +397,25 @@ export function useNetworkData() {
       // ignore
     }
     setAlerts([]);
+    setBackendStatus((prev) => {
+      if (!prev) return null;
+      return {
+        ...prev,
+        alerts: {
+          total: 0,
+          last_1h: 0,
+          last_24h: 0,
+          critical_total: 0,
+          last_alert_at: null,
+          table_bytes: 0,
+        },
+        flows: {
+          total: 0,
+          last_flow_at: null,
+          table_bytes: 0,
+        },
+      };
+    });
   };
 
   return {

@@ -150,10 +150,19 @@ class Detector:
                 label = sig.xgb_label
                 confidence = sig.xgb_confidence
 
+        # Check if XGBoost confidently classified this flow as benign
+        xgb_is_explicitly_benign = (
+            sig.xgb_label is not None
+            and sig.xgb_label.lower() in {"benign", "normal", "0"}
+            and (sig.xgb_confidence or 0.0) >= 0.70
+        )
+
         # 2. Unsupervised Isolation Forest (Zero-Day Anomaly Detection)
         if sig.isoforest_score is not None and sig.isoforest_score >= settings.isoforest_threshold:
-            # Only trigger if XGBoost didn't classify as benign or if score is high zero-day threshold (>= 0.75)
-            if not is_anomaly and sig.isoforest_score >= 0.75:
+            # If XGBoost is confident the traffic is benign normal traffic, require an extreme anomaly score (>= 0.88)
+            # to prevent normal background web/DNS/OS traffic from triggering false alarms on idle networks
+            min_score = 0.88 if xgb_is_explicitly_benign else 0.75
+            if not is_anomaly and sig.isoforest_score >= min_score:
                 is_anomaly = True
                 label = "Anomaly (Zero-Day)"
                 confidence = float(sig.isoforest_score)

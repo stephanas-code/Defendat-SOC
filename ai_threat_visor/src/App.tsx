@@ -10,7 +10,7 @@ import { PersistenceStatusComponent } from './components/dashboard/PersistenceSt
 import { ReportPage } from './components/dashboard/ReportPage';
 import { SettingsPage } from './components/dashboard/SettingsPage';
 import { useNetworkData } from './hooks/useNetworkData';
-import { Bell, RefreshCcw, ShieldCheck, Search, Info, Menu } from 'lucide-react';
+import { Bell, RefreshCcw, ShieldCheck, Search, Info, Menu, Trash2 } from 'lucide-react';
 import { Toaster } from './components/ui/sonner';
 import { toast } from 'sonner';
 import { Sheet, SheetContent, SheetTrigger } from './components/ui/sheet';
@@ -84,6 +84,22 @@ function App() {
     lastAlertIdRef.current = latestAlert.id;
   }, [alerts]);
 
+  const [isClearing, setIsClearing] = React.useState(false);
+
+  const handleClearAlerts = async () => {
+    setIsClearing(true);
+    try {
+      await clearAlerts();
+      toast.success('Alerts Cleared', {
+        description: 'Database tables, Redis deduplication, and live threat feed have been reset to 0.',
+      });
+    } catch {
+      toast.error('Failed to clear alerts');
+    } finally {
+      setIsClearing(false);
+    }
+  };
+
   const handleCaptureToggle = () => {
     setIsCapturing(!isCapturing);
     toast.info(isCapturing ? 'Network capture paused' : 'Real-time capture started', {
@@ -103,7 +119,7 @@ function App() {
                 <SeverityAnalytics alerts={alerts} />
               </div>
               <div className="space-y-6">
-                <LiveAlertFeed alerts={alerts} onClearAlerts={clearAlerts} />
+                <LiveAlertFeed alerts={alerts} onClearAlerts={handleClearAlerts} />
                 <SystemHealth />
               </div>
             </div>
@@ -112,11 +128,21 @@ function App() {
       case 'alerts':
         return (
           <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500">
-            <div>
-              <h2 className="text-2xl font-bold text-white">Live Threat Stream</h2>
-              <p className="text-slate-400 text-sm">Detailed log of all detected anomalies and network intrusions</p>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-2xl font-bold text-white">Live Threat Stream</h2>
+                <p className="text-slate-400 text-sm">Detailed log of all detected anomalies and network intrusions</p>
+              </div>
+              <Button
+                onClick={handleClearAlerts}
+                disabled={isClearing}
+                className="bg-red-600 hover:bg-red-700 text-white font-bold text-xs shadow-lg shadow-red-900/20 self-start sm:self-auto cursor-pointer active:scale-95"
+              >
+                <Trash2 className={`w-3.5 h-3.5 mr-1.5 ${isClearing ? 'animate-spin' : ''}`} />
+                {isClearing ? 'Clearing Stream...' : 'Clear Threat Stream'}
+              </Button>
             </div>
-            <LiveAlertFeed alerts={alerts} onClearAlerts={clearAlerts} expanded />
+            <LiveAlertFeed alerts={alerts} onClearAlerts={handleClearAlerts} expanded />
           </div>
         );
       case 'map':
@@ -190,12 +216,21 @@ function App() {
               onClick={handleCaptureToggle}
               className={`flex items-center gap-2 px-3 lg:px-4 py-1.5 lg:py-2.5 rounded-lg text-xs lg:text-sm font-semibold transition-all shadow-lg ${
                 isCapturing 
-                ? 'bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 shadow-red-900/5' 
+                ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20 hover:bg-amber-500/20 shadow-amber-900/5' 
                 : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20 shadow-emerald-900/5'
               }`}
             >
               <RefreshCcw className={`w-3.5 h-3.5 lg:w-4 h-4 ${isCapturing ? 'animate-spin' : ''}`} />
               <span className="hidden sm:inline">{isCapturing ? 'Stop Engine' : 'Start Engine'}</span>
+            </button>
+            <button 
+              onClick={handleClearAlerts}
+              disabled={isClearing}
+              className="flex items-center gap-1.5 px-3 lg:px-4 py-1.5 lg:py-2.5 rounded-lg text-xs lg:text-sm font-bold transition-all shadow-lg bg-red-500/15 text-red-400 border border-red-500/30 hover:bg-red-500/25 hover:text-red-300 shadow-red-900/10 active:scale-95 disabled:opacity-50 cursor-pointer"
+              title="Clear all alerts, empty database, and reset live feed"
+            >
+              <Trash2 className={`w-3.5 h-3.5 lg:w-4 h-4 ${isClearing ? 'animate-spin' : ''}`} />
+              <span>{isClearing ? 'Clearing...' : 'Clear Alerts'}</span>
             </button>
             <button className="p-2 lg:p-2.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 hover:text-white transition-colors relative group">
               <Bell className="w-4 h-4 lg:w-5 h-5" />

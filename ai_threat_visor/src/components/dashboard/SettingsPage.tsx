@@ -14,57 +14,135 @@ export function SettingsPage() {
   const [showKey, setShowKey] = React.useState(false);
 
   // Security Policies Settings
-  const [sensitivity, setSensitivity] = React.useState(85);
-  const [modules, setModules] = React.useState([
+  const [sensitivity, setSensitivity] = React.useState<number>(() => {
+    const saved = localStorage.getItem('nids_sensitivity');
+    return saved !== null ? Number(saved) : 85;
+  });
+
+  const DEFAULT_MODULES = [
     { id: 'dpi', label: 'Deep Packet Inspection (DPI)', enabled: true },
     { id: 'flow', label: 'Flow-based Anomaly Engine', enabled: true },
     { id: 'bayes', label: 'Bayesian Behavioral Analysis', enabled: false },
     { id: 'geoip', label: 'Geo-IP Threat Intel Sync', enabled: true },
-  ]);
+  ];
+
+  const [modules, setModules] = React.useState(() => {
+    try {
+      const saved = localStorage.getItem('nids_modules');
+      if (saved) return JSON.parse(saved);
+    } catch {
+      // ignore
+    }
+    return DEFAULT_MODULES;
+  });
 
   // Profile Settings
-  const [profile, setProfile] = React.useState({
-    name: 'Stephanas Odogu',
-    email: 'stephanas.odogu@example.com',
-    role: 'Security Researcher',
-    institution: 'MIVA Open University',
+  const [profile, setProfile] = React.useState(() => {
+    try {
+      const saved = localStorage.getItem('nids_profile');
+      if (saved) return JSON.parse(saved);
+    } catch {
+      // ignore
+    }
+    return {
+      name: 'Stephanas Odogu',
+      email: 'stephanas.odogu@example.com',
+      role: 'Security Researcher',
+      institution: 'MIVA Open University',
+    };
   });
 
   // Alert Notifications Settings
-  const [notifications, setNotifications] = React.useState({
-    emailAlerts: false,
-    pushNotifications: true,
-    soundEnabled: localStorage.getItem('nids_sound_enabled') !== 'false', // Default true
-    slackWebhook: '',
+  const [notifications, setNotifications] = React.useState(() => {
+    try {
+      const saved = localStorage.getItem('nids_notifications');
+      if (saved) return JSON.parse(saved);
+    } catch {
+      // ignore
+    }
+    return {
+      emailAlerts: false,
+      pushNotifications: true,
+      soundEnabled: localStorage.getItem('nids_sound_enabled') !== 'false',
+      slackWebhook: '',
+    };
   });
 
   // Display Settings
-  const [display, setDisplay] = React.useState({
-    compactMode: false,
-    mapStyle: 'cyber',
-    refreshRate: '5',
+  const [display, setDisplay] = React.useState(() => {
+    try {
+      const saved = localStorage.getItem('nids_display');
+      if (saved) return JSON.parse(saved);
+    } catch {
+      // ignore
+    }
+    return {
+      compactMode: false,
+      mapStyle: 'cyber',
+      refreshRate: '5',
+    };
   });
 
   // API Keys
   const apiKey = 'nids_live_ak_7a8b9c1d2e3f4g5h6i7j8k9l0m1n2o3p';
 
   const toggleModule = (id: string) => {
-    setModules(prev => prev.map(mod => 
-      mod.id === id ? { ...mod, enabled: !mod.enabled } : mod
-    ));
+    setModules((prev: typeof DEFAULT_MODULES) => {
+      const updated = prev.map(mod => 
+        mod.id === id ? { ...mod, enabled: !mod.enabled } : mod
+      );
+      // Immediately cache to localStorage so toggle is preserved even before clicking Save
+      try {
+        localStorage.setItem('nids_modules', JSON.stringify(updated));
+      } catch {
+        // ignore
+      }
+      return updated;
+    });
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     setIsSaving(true);
-    // Persist sound setting to localStorage so the notification engine can read it
-    localStorage.setItem('nids_sound_enabled', notifications.soundEnabled.toString());
-    
-    setTimeout(() => {
+    try {
+      // Persist all settings into localStorage
+      localStorage.setItem('nids_sensitivity', sensitivity.toString());
+      localStorage.setItem('nids_modules', JSON.stringify(modules));
+      localStorage.setItem('nids_profile', JSON.stringify(profile));
+      localStorage.setItem('nids_notifications', JSON.stringify(notifications));
+      localStorage.setItem('nids_sound_enabled', notifications.soundEnabled.toString());
+      localStorage.setItem('nids_display', JSON.stringify(display));
+
+      // Attempt backend synchronization (best-effort)
+      try {
+        const backendHttp = (import.meta.env.VITE_BACKEND_HTTP as string | undefined) || 'http://localhost:8000';
+        await fetch(`${backendHttp.replace(/\/+$/, '')}/settings`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sensitivity,
+            modules,
+            notifications,
+            display,
+          }),
+        });
+      } catch {
+        // Backend sync optional
+      }
+
+      window.dispatchEvent(new CustomEvent('nids_settings_changed', {
+        detail: { sensitivity, modules, notifications, display }
+      }));
+
+      setTimeout(() => {
+        setIsSaving(false);
+        toast.success('Configuration Saved', {
+          description: 'Detection sensitivity, security modules & parameters updated successfully.'
+        });
+      }, 500);
+    } catch {
       setIsSaving(false);
-      toast.success('Configuration Saved', {
-        description: 'System parameters have been updated successfully.'
-      });
-    }, 800);
+      toast.error('Failed to save configuration');
+    }
   };
 
   const copyApiKey = () => {

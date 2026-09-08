@@ -58,6 +58,7 @@ services:
       - ./artifacts:/artifacts
       - ./data:/data
       - ./scripts:/app/scripts
+      - ./backend/app:/app/app
 
   responder:
     build:
@@ -107,6 +108,9 @@ services:
       - VITE_BACKEND_WS=ws://localhost:8000/ws/alerts
     ports:
       - "3000:3000"
+    volumes:
+      - ./ai_threat_visor/src:/app/src
+      - ./ai_threat_visor/public:/app/public
     depends_on:
       - backend
 

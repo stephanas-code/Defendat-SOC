@@ -45,16 +45,14 @@ export function LiveAlertFeed({ alerts, onClearAlerts, expanded = false }: LiveA
           </div>
           <div className="flex items-center gap-3">
             {onClearAlerts && (
-              <Button
-                variant="ghost"
-                size="sm"
+              <button
                 onClick={onClearAlerts}
-                className="h-7 px-2 text-[10px] text-slate-400 hover:text-white hover:bg-slate-800"
-                title="Clear all alerts"
+                className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-bold text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-md transition-all active:scale-95 shadow-sm cursor-pointer"
+                title="Clear all alerts and truncate database"
               >
-                <Trash2 className="w-3 h-3 mr-1" />
-                Clear
-              </Button>
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Clear</span>
+              </button>
             )}
             <div className="flex items-center gap-2 px-2.5 py-1 bg-black/40 border border-slate-800 rounded-full">
               <span className="flex h-1.5 w-1.5 rounded-full bg-red-500 animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.8)]" />

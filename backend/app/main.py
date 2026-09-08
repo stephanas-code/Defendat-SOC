@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from kafka import KafkaAdminClient
+from pydantic import BaseModel
 import redis
 
 from app.config import settings
@@ -220,12 +221,65 @@ def alerts(limit: int = 200) -> Dict[str, Any]:
     return {"items": list(get_recent_alerts(limit=limit))}
 
 
+class RuntimeSettingsUpdate(BaseModel):
+    sensitivity: Optional[int] = None
+    modules: Optional[List[Dict[str, Any]]] = None
+    notifications: Optional[Dict[str, Any]] = None
+    display: Optional[Dict[str, Any]] = None
+
+
+_runtime_settings: Dict[str, Any] = {
+    "sensitivity": 85,
+    "modules": [
+        {"id": "dpi", "label": "Deep Packet Inspection (DPI)", "enabled": True},
+        {"id": "flow", "label": "Flow-based Anomaly Engine", "enabled": True},
+        {"id": "bayes", "label": "Bayesian Behavioral Analysis", "enabled": False},
+        {"id": "geoip", "label": "Geo-IP Threat Intel Sync", "enabled": True},
+    ],
+    "isoforest_threshold": settings.isoforest_threshold,
+    "xgboost_confidence_threshold": settings.xgboost_confidence_threshold,
+}
+
+
+@app.get("/settings")
+def get_runtime_settings() -> Dict[str, Any]:
+    _runtime_settings["isoforest_threshold"] = settings.isoforest_threshold
+    _runtime_settings["xgboost_confidence_threshold"] = settings.xgboost_confidence_threshold
+    return _runtime_settings
+
+
+@app.post("/settings")
+def update_runtime_settings(payload: RuntimeSettingsUpdate) -> Dict[str, Any]:
+    if payload.sensitivity is not None:
+        sens = max(1, min(100, payload.sensitivity))
+        _runtime_settings["sensitivity"] = sens
+        # Dynamically scale detection thresholds based on sensitivity:
+        # Higher sensitivity -> lower threshold for triggering anomaly
+        # Default sens=85: isoforest_threshold = 0.65
+        settings.isoforest_threshold = round(0.95 - (sens / 100.0) * 0.35, 3)
+        settings.xgboost_confidence_threshold = round(max(0.40, 0.95 - (sens / 100.0) * 0.35), 3)
+
+    if payload.modules is not None:
+        _runtime_settings["modules"] = payload.modules
+    if payload.notifications is not None:
+        _runtime_settings["notifications"] = payload.notifications
+    if payload.display is not None:
+        _runtime_settings["display"] = payload.display
+
+    _runtime_settings["isoforest_threshold"] = settings.isoforest_threshold
+    _runtime_settings["xgboost_confidence_threshold"] = settings.xgboost_confidence_threshold
+    logger.info("runtime_settings_updated", extra={"settings": _runtime_settings})
+    return {"status": "ok", "settings": _runtime_settings}
+
+
 @app.delete("/alerts")
 def delete_alerts() -> Dict[str, Any]:
     """Clear all stored alerts from database and reset deduplication cache."""
     try:
         clear_alerts()
         dedup.clear()
+        # Broadcast clear event to all active WebSocket clients so UI immediately clears
+        broadcaster.broadcast({"action": "clear", "type": "clear"})
         return {"status": "ok", "message": "All alerts cleared successfully"}
     except Exception as e:
         logger.exception("clear_alerts_failed")
