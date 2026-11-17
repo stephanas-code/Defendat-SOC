@@ -1,0 +1,139 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-ids-backend
+  namespace: ai-ids-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-ids-backend
+  template:
+    metadata:
+      labels:
+        app: ai-ids-backend
+    spec:
+      serviceAccountName: ai-ids-backend-sa
+      containers:
+        - name: backend
+          image: ai-anomaly-ids-idp-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: ai-ids-config
+            - secretRef:
+                name: ai-ids-secrets
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1500m"
+              memory: "2Gi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          volumeMounts:
+            - name: host-proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: host-etc
+              mountPath: /host/etc
+              readOnly: true
+            - name: host-log
+              mountPath: /host/var/log
+              readOnly: true
+      volumes:
+        - name: host-proc
+          hostPath:
+            path: /proc
+            type: Directory
+        - name: host-etc
+          hostPath:
+            path: /etc
+            type: Directory
+        - name: host-log
+          hostPath:
+            path: /var/log
+            type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-ids-backend
+  namespace: ai-ids-system
+spec:
+  type: ClusterIP
+  selector:
+    app: ai-ids-backend
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-threat-visor
+  namespace: ai-ids-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-threat-visor
+  template:
+    metadata:
+      labels:
+        app: ai-threat-visor
+    spec:
+      containers:
+        - name: dashboard
+          image: ai-anomaly-ids-idp-ai_threat_visor:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 3000
+          env:
+            - name: VITE_BACKEND_HTTP
+              value: "http://localhost:8000"
+            - name: VITE_BACKEND_WS
+              value: "ws://localhost:8000/ws/alerts"
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ai-threat-visor
+  namespace: ai-ids-system
+spec:
+  type: ClusterIP
+  selector:
+    app: ai-threat-visor
+  ports:
+    - port: 3000
+      targetPort: 3000

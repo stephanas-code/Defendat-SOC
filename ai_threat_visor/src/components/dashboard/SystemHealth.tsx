@@ -1,50 +1,57 @@
 import { Cpu, Activity, Database, Network, ShieldAlert, CheckCircle } from 'lucide-react';
-import { SystemHealth as SystemHealthType } from '../../types';
 import { useNetworkData } from '../../hooks/useNetworkData';
 
 export function SystemHealth() {
   const { backendStatus } = useNetworkData();
 
-  const components: SystemHealthType[] = [
+  const cpuPct = Math.round(backendStatus?.infrastructure?.cpu_load_pct ?? 0);
+  const memPct = Math.round(backendStatus?.infrastructure?.memory_used_pct ?? 0);
+  const isoInv = backendStatus?.model_metrics?.isoforest?.invocations ?? 0;
+  const xgbInv = backendStatus?.model_metrics?.xgboost?.invocations ?? 0;
+  const lstmInv = backendStatus?.model_metrics?.lstm_onnx?.invocations ?? 0;
+  const activeBlocks = backendStatus?.idp?.active_blocks_count ?? 0;
+
+  const components = [
     {
-      component: 'Traffic Sensor',
+      component: 'Kafka Event Bus',
       status: backendStatus?.components?.kafka?.ok ? 'online' : 'offline',
-      uptime: 'active',
-      load: backendStatus?.components?.kafka?.ok ? 15 : 0
+      metricLabel: `${backendStatus?.flows?.total ?? 0} flows processed`,
+      barPct: backendStatus?.components?.kafka?.ok ? Math.min(100, cpuPct || 5) : 0,
     },
     {
-      component: 'Isolation Forest',
+      component: 'Isolation Forest (44-Feature)',
       status: backendStatus?.models?.isoforest ? 'online' : 'offline',
-      uptime: 'active',
-      load: backendStatus?.models?.isoforest ? 25 : 0
+      metricLabel: `${isoInv} runs (${(backendStatus?.model_metrics?.isoforest?.avg_latency_ms ?? 0).toFixed(1)}ms)`,
+      barPct: backendStatus?.models?.isoforest ? Math.min(100, Math.round((backendStatus?.model_metrics?.isoforest?.avg_latency_ms ?? 0) * 2)) : 0,
     },
     {
       component: 'XGBoost Classifier',
       status: backendStatus?.models?.xgboost ? 'online' : 'offline',
-      uptime: 'active',
-      load: backendStatus?.models?.xgboost ? 40 : 0
+      metricLabel: `${xgbInv} runs (${(backendStatus?.model_metrics?.xgboost?.avg_latency_ms ?? 0).toFixed(1)}ms)`,
+      barPct: backendStatus?.models?.xgboost ? Math.min(100, Math.round((backendStatus?.model_metrics?.xgboost?.avg_latency_ms ?? 0) * 2)) : 0,
     },
     {
-      component: 'LSTM Autoencoder',
+      component: 'LSTM Autoencoder (ONNX)',
       status: backendStatus?.models?.lstm_onnx ? 'online' : 'offline',
-      uptime: 'active',
-      load: backendStatus?.models?.lstm_onnx ? 35 : 0
+      metricLabel: `${lstmInv} runs (${(backendStatus?.model_metrics?.lstm_onnx?.avg_latency_ms ?? 0).toFixed(2)}ms)`,
+      barPct: backendStatus?.models?.lstm_onnx ? Math.min(100, Math.max(2, Math.round((backendStatus?.model_metrics?.lstm_onnx?.avg_latency_ms ?? 0) * 10))) : 0,
     },
     {
-      component: 'TimescaleDB',
+      component: 'TimescaleDB Storage',
       status: backendStatus?.components?.database?.ok ? 'online' : 'offline',
-      uptime: 'active',
-      load: backendStatus?.components?.database?.ok ? 10 : 0
+      metricLabel: `${Math.round((backendStatus?.alerts?.table_bytes ?? 0) / 1024)} KB indexed`,
+      barPct: backendStatus?.components?.database?.ok ? memPct : 0,
     },
     {
-      component: 'Redis Cache',
+      component: 'IDP Firewall & Redis Sync',
       status: backendStatus?.components?.redis?.ok ? 'online' : 'offline',
-      uptime: 'active',
-      load: backendStatus?.components?.redis?.ok ? 5 : 0
-    }
+      metricLabel: `${activeBlocks} active blocks`,
+      barPct: backendStatus?.components?.redis?.ok ? Math.min(100, activeBlocks * 5 + 5) : 0,
+    },
   ];
 
-  const attackSensingActive = backendStatus?.models?.isoforest || backendStatus?.models?.xgboost || backendStatus?.models?.lstm_onnx;
+  const attackSensingActive =
+    backendStatus?.models?.isoforest || backendStatus?.models?.xgboost || backendStatus?.models?.lstm_onnx;
   const totalAlerts = backendStatus?.alerts?.total || 0;
   const criticalAlerts = backendStatus?.alerts?.critical_total || 0;
 
@@ -58,8 +65,11 @@ export function SystemHealth() {
         </span>
       </div>
 
-      {/* Attack Sensing Status */}
-      <div className={`mb-6 p-4 rounded-lg border ${attackSensingActive ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-red-500/10 border-red-500/20'}`}>
+      <div
+        className={`mb-6 p-4 rounded-lg border ${
+          attackSensingActive ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-red-500/10 border-red-500/20'
+        }`}
+      >
         <div className="flex items-center gap-3">
           {attackSensingActive ? (
             <ShieldAlert className="w-5 h-5 text-emerald-500" />
@@ -71,8 +81,8 @@ export function SystemHealth() {
               Attack Sensing: {attackSensingActive ? 'ACTIVE' : 'INACTIVE'}
             </p>
             <p className="text-xs text-slate-500">
-              {attackSensingActive 
-                ? `${totalAlerts} total alerts detected, ${criticalAlerts} critical threats`
+              {attackSensingActive
+                ? `${totalAlerts} total alerts recorded, ${criticalAlerts} critical threats`
                 : 'No ML models loaded. System cannot detect attacks.'}
             </p>
           </div>
@@ -82,54 +92,50 @@ export function SystemHealth() {
       <div className="space-y-4">
         {components.map((comp, idx) => (
           <div key={idx} className="flex items-center gap-4 group">
-            <div className={`p-2 rounded-lg ${
-              comp.status === 'online' ? 'bg-emerald-500/10' : 'bg-orange-500/10'
-            }`}>
-              {idx === 0 ? <Network className={`w-4 h-4 ${comp.status === 'online' ? 'text-emerald-400' : 'text-orange-400'}`} /> : 
-               idx < 4 ? <Cpu className={`w-4 h-4 ${comp.status === 'online' ? 'text-emerald-400' : 'text-orange-400'}`} /> : 
-               <Database className={`w-4 h-4 ${comp.status === 'online' ? 'text-emerald-400' : 'text-orange-400'}`} />}
+            <div className={`p-2 rounded-lg ${comp.status === 'online' ? 'bg-emerald-500/10' : 'bg-orange-500/10'}`}>
+              {idx === 0 ? (
+                <Network className={`w-4 h-4 ${comp.status === 'online' ? 'text-emerald-400' : 'text-orange-400'}`} />
+              ) : idx < 4 ? (
+                <Cpu className={`w-4 h-4 ${comp.status === 'online' ? 'text-emerald-400' : 'text-orange-400'}`} />
+              ) : (
+                <Database className={`w-4 h-4 ${comp.status === 'online' ? 'text-emerald-400' : 'text-orange-400'}`} />
+              )}
             </div>
-            
+
             <div className="flex-1">
               <div className="flex justify-between items-center mb-1">
                 <p className="text-xs font-medium text-slate-200">{comp.component}</p>
-                <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                  comp.status === 'online' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-orange-500/10 text-orange-400'
-                }`}>
+                <span
+                  className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${
+                    comp.status === 'online' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-orange-500/10 text-orange-400'
+                  }`}
+                >
                   {comp.status.toUpperCase()}
                 </span>
               </div>
               <div className="flex items-center gap-3">
                 <div className="flex-1 h-1 bg-slate-800 rounded-full overflow-hidden">
-                  <div 
-                    className={`h-full transition-all duration-1000 ${
-                      comp.load > 80 ? 'bg-red-500' : comp.load > 50 ? 'bg-orange-500' : 'bg-blue-500'
+                  <div
+                    className={`h-full transition-all duration-500 ${
+                      comp.barPct > 80 ? 'bg-red-500' : comp.barPct > 50 ? 'bg-orange-500' : 'bg-blue-500'
                     }`}
-                    style={{ width: `${comp.load}%` }}
+                    style={{ width: `${comp.barPct}%` }}
                   />
                 </div>
-                <span className="text-[10px] text-slate-500 w-6">{comp.load}%</span>
+                <span className="text-[10px] font-mono text-slate-400 shrink-0">{comp.metricLabel}</span>
               </div>
             </div>
           </div>
         ))}
       </div>
 
-      <div className="mt-6 pt-4 border-t border-slate-800 space-y-3">
-        <button 
-          className="w-full py-2 text-xs font-medium text-slate-400 hover:text-white transition-colors bg-slate-800/50 hover:bg-slate-800 rounded-lg"
+      <div className="mt-6 pt-4 border-t border-slate-800">
+        <button
+          className="w-full py-2 text-xs font-medium text-slate-400 hover:text-white transition-colors bg-slate-800/50 hover:bg-slate-800 rounded-lg cursor-pointer"
           onClick={() => window.open('http://localhost:8000/status', '_blank')}
         >
-          View API Status
+          View Raw Backend JSON (/status)
         </button>
-        {!attackSensingActive && (
-          <button 
-            className="w-full py-2 text-xs font-medium text-blue-400 hover:text-white transition-colors bg-blue-500/10 hover:bg-blue-500/20 rounded-lg border border-blue-500/20"
-            onClick={() => window.open('https://github.com/your-repo/blob/main/scripts/', '_blank')}
-          >
-            Train ML Models
-          </button>
-        )}
       </div>
     </div>
   );

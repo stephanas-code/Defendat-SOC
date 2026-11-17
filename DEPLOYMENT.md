@@ -1,230 +1,192 @@
-# AI Anomaly IDS Deployment Guide
+# Production Deployment, Kubernetes Integration & Security Hardening Guide
 
-## Production Deployment Instructions
+This guide covers all 15 operational and architectural areas required to deploy and manage the **AI Anomaly IDS/IDP** on a production Linux server hosting Kubernetes.
 
-This system is designed for live deployment with real-time attack detection capabilities.
+---
 
-### Prerequisites
+## 1. Production Architecture
 
-- Docker and Docker Compose
-- Python 3.9+ (for running replay scripts)
-- Network interface access (for sensor component)
+The platform uses a hybrid **Centralized Control Plane + Node-Level Telemetry/Enforcement** architecture:
+- **Central Security Management & AI Inference (`ai-ids-backend`)**: FastAPI service running the 44-feature ML ensemble (Isolation Forest, XGBoost, LSTM Autoencoder), OWASP CRS WAF engine, Kubernetes Auto-Discovery & Audit monitor, Linux Host monitor, Centralized Threat Correlation Engine, and IDP Policy Coordinator.
+- **Node-Level DaemonSet / Host Agents (`sensor` + `responder`)**:
+  - `sensor`: Captures north-south and east-west traffic (`SENSOR_INTERFACE=any` with veth/bridge packet deduplication) using `CAP_NET_RAW` + `CAP_NET_ADMIN` (no unrestricted `privileged: true`), reconstructs bidirectional flows, computes the 44 CICFlowMeter features, and streams compressed records to Kafka (`flows`).
+  - `responder`: Subscribes to Kafka (`alerts`) and Redis (`idp:commands`) to enforce host-level `iptables`/`nftables` drops in the dedicated `AI_IDS_BLOCK` chain (`INPUT`, `FORWARD`, `DOCKER-USER`) with a 5-second background TTL expiry thread and 12 safety guardrails.
+- **Internal Data Plane (`timescaledb`, `redis`, `kafka`, `zookeeper`)**: Bound strictly to `127.0.0.1` in Docker Compose or isolated via `ClusterIP` + `NetworkPolicy` in Kubernetes (`k8s/05-network-policies-waf.yaml`).
+- **SOC Management Interface (`ai_threat_visor`)**: React/TypeScript operational dashboard on port `3000`.
 
-### Quick Start (Production)
+---
 
-1. **Start Infrastructure Services**
-```bash
-docker compose up -d zookeeper kafka redis timescaledb
-```
+## 2. Pre-Deployment Audit & Migration Safety
 
-2. **Start Backend and Frontend**
-```bash
-docker-compose up -d backend ai_threat_visor
-```
-
-3. **Access Dashboard**
-- Main Dashboard: http://localhost:3000
-- Backend API: http://localhost:8000
-- API Status: http://localhost:8000/status
-- Health Check: http://localhost:8000/health
-
-### Training ML Models (Required for Attack Detection)
-
-The system includes automated training scripts that use the datasets in `artifacts/CSVs/` to train ML models for attack detection.
-
-#### Quick Training (Recommended)
+Before deploying on an existing production Kubernetes host, run the non-destructive audit and backup script:
 
 ```bash
-# Train all models using datasets from artifacts folder
-python scripts/train_all_models.py --artifacts-dir artifacts/CSVs --output-dir artifacts
+chmod +x scripts/pre_deploy_audit.sh
+./scripts/pre_deploy_audit.sh
 ```
 
-This automated pipeline:
-1. Processes CSV files from `artifacts/CSVs/` (CIC-IDS2017 dataset)
-2. Extracts 44 network flow features compatible with the system
-3. Trains Isolation Forest on benign traffic for anomaly detection
-4. Trains XGBoost on mixed benign and attack traffic for classification
-5. Saves model files to `artifacts/` directory for deployment
+This creates a timestamped backup directory under `./backups/YYYYMMDD_HHMMSS/` containing:
+- Host network interfaces and active admin SSH sessions (`host_interfaces.txt`, `active_admin_sessions.txt`)
+- Current listening ports (`listening_ports.txt`)
+- Complete `iptables-save` and `nft list ruleset` backups (`iptables_backup.rules`, `nftables_backup.nft`)
+- Complete Kubernetes cluster inventory (`k8s_nodes.txt`, `k8s_all_resources.txt`, `k8s_ingresses.yaml`, `k8s_networkpolicies.yaml`)
+- CNI plugin configuration snapshot (`cni_config.txt`)
 
-#### Manual Training (Advanced)
+**Migration Safety Rules Enforced by Design**:
+- Never flushes system-wide `iptables`/`nftables` tables; only manages rules inside the dedicated `AI_IDS_BLOCK` chain.
+- Never deletes or restarts existing Kubernetes workloads or modifies existing service ports.
 
-For granular control over the training process:
+---
 
-**Step 1: Prepare Training Data**
-```bash
-python scripts/prepare_training_data.py --artifacts-dir artifacts/CSVs --output-dir artifacts/processed --max-samples 10000
-```
+## 3. Server Deployment Guide (Docker Compose)
 
-**Step 2: Train Isolation Forest**
-```bash
-python scripts/train_isoforest.py --input artifacts/processed/benign_features.npy --output artifacts
-```
-
-**Step 3: Train XGBoost**
-```bash
-python scripts/train_xgboost.py --features artifacts/processed/xgboost_features.npy --labels artifacts/processed/xgboost_labels.npy --label-names artifacts/processed/xgboost_label_names.txt --output artifacts
-```
-
-**Step 4: Train LSTM Autoencoder (Optional)**
-```bash
-python scripts/train_lstm_autoencoder_export_onnx.py --input artifacts/processed/benign_features.npy --scaler artifacts/scaler.joblib --output artifacts
-```
-
-#### Dataset Information
-
-The training uses the **CIC-IDS2017** dataset with these attack types:
-- **DDoS/DoS**: LOIT, Hulk, GoldenEye, Slowloris, SlowHTTPTest  
-- **Botnet**: Ares
-- **Web Attacks**: SQL Injection, XSS, Brute Force
-- **Brute Force**: FTP, SSH Patator
-- **Port Scanning**: Network reconnaissance
-- **Benign**: Normal traffic patterns from multiple days
-
-**Model Recommendations**:
-- **Isolation Forest**: Trained on benign traffic only (anomaly detection)
-- **XGBoost**: Trained on mixed benign + attack traffic (classification)
-
-For detailed dataset analysis, see `DATASET_ANALYSIS.md`
-
-### Testing Attack Detection
-
-#### Option 1: Using Global Threats Dataset (Demo Mode)
-```bash
-# Windows
-scripts\test_replay.bat
-
-# Linux/Mac
-chmod +x scripts/test_replay.sh
-./scripts/test_replay.sh
-```
-
-#### Option 2: Using Real Network Flow Data (Production Mode)
-```bash
-python scripts/replay_network_flows.py \
-  --csv artifacts/CSVs/ddos_loit.csv \
-  --backend http://localhost:8000 \
-  --rate 10 \
-  --limit 100
-```
-
-Available attack datasets in `artifacts/CSVs/`:
-- `ddos_loit.csv` - DDoS LOIT attack
-- `dos_hulk.csv` - DoS Hulk attack  
-- `botnet_ares.csv` - Botnet Ares attack
-- `web_sql_injection.csv` - SQL Injection attack
-- `web_xss.csv` - XSS attack
-- `portscan.csv` - Port scanning attack
-- And many more...
-
-### System Health Monitoring
-
-The System Health page (in the dashboard) shows:
-- **Attack Sensing Status**: ACTIVE if ML models are loaded, INACTIVE otherwise
-- **Component Status**: Real-time status of all pipeline components
-- **Alert Statistics**: Total alerts, critical threats, recent activity
-- **Model Status**: Which ML models are currently loaded and operational
-
-### Production Configuration
-
-For production deployment, update the `.env` file:
-
-```env
-# Backend
-BACKEND_HOST=0.0.0.0
-BACKEND_PORT=8000
-BACKEND_LOG_LEVEL=warning  # Reduce log noise in production
-
-# Detection Thresholds (tune based on your environment)
-ISOFOREST_THRESHOLD=0.65
-XGBOOST_CONFIDENCE_THRESHOLD=0.70
-
-# IDP Blocking (enable if you want automatic blocking)
-IDP_ENABLED=true
-IDP_BLOCK_SECONDS=600
-IDP_MAX_BLOCKS=50
-```
-
-### Starting Full System with Network Capture
-
-To enable real network traffic monitoring:
+1. Review `.env` and set `IDP_MANAGEMENT_IPS` and `IDP_ALLOWLIST` to include your workstation/bastion IP and cluster CIDRs.
+2. Start the stack initially in safe `monitor` or `safe_enforce` mode:
 
 ```bash
-docker-compose --profile capture up -d
+docker compose up -d zookeeper kafka redis timescaledb backend ai_threat_visor
+docker compose --profile capture up -d sensor responder
 ```
 
-This starts:
-- Sensor (captures network traffic)
-- Responder (blocks detected threats)
-- All other components
+3. Verify health and telemetry:
 
-**Note**: Sensor requires network interface access and proper permissions.
+```bash
+curl -s http://localhost:8000/status | python3 -m json.tool
+```
 
-### Security Considerations for Production
+---
 
-1. **Change Default Passwords**
-   - Update `POSTGRES_PASSWORD` in `.env`
-   - Update Redis authentication if needed
+## 4. Kubernetes Integration Guide (`k8s/`)
 
-2. **Network Security**
-   - Use firewall rules to restrict access to backend ports
-   - Deploy behind reverse proxy (nginx) for SSL/TLS
-   - Use environment-specific CORS settings
+Deploy into the isolated `ai-ids-system` namespace:
 
-3. **Data Persistence**
-   - TimescaleDB data is persisted in Docker volume
-   - Regular backups recommended for production
+```bash
+kubectl apply -f k8s/00-namespace-rbac.yaml
+kubectl apply -f k8s/01-config-secrets.yaml
+kubectl apply -f k8s/02-storage-db-redis-kafka.yaml
+kubectl apply -f k8s/03-backend-dashboard.yaml
+kubectl apply -f k8s/04-sensor-responder-daemonset.yaml
+kubectl apply -f k8s/05-network-policies-waf.yaml
+```
 
-4. **Monitoring**
-   - Monitor system health via `/status` endpoint
-   - Set up alerts for high critical alert counts
-   - Monitor ML model performance metrics
+Verify that applications across all namespaces are automatically discovered:
 
-### Troubleshooting
+```bash
+curl -s http://localhost:8000/kubernetes/applications | python3 -m json.tool
+```
 
-**System shows "Attack Sensing: INACTIVE"**
-- ML models are not trained. Run training scripts or use `TRAINING_COLAB.md`.
+---
 
-**Kafka shows disconnected on /status**
-- Start Kafka: `docker compose up -d zookeeper kafka`
-- Sensor/responder use `localhost:9094`; backend uses `kafka:9092`
+## 5. Linux Host Monitoring Setup
 
-**No alerts appearing in dashboard**
-- Check backend is running: `curl http://localhost:8000/health`
-- Check WebSocket connection in browser console
-- Replay test data using provided scripts
+Configured via `.env`:
+- `HOST_MONITORING_ENABLED=true`
+- `LOG_MONITORING_ENABLED=true`
+- `HOST_PROC_DIR=/host/proc` (or `/proc` on native Linux)
+- `HOST_ETC_DIR=/host/etc`
+- `HOST_LOG_DIR=/host/var/log`
 
-**Database connection errors**
-- Ensure TimescaleDB container is running: `docker-compose ps timescaledb`
-- Check database credentials in `.env`
+The Host Monitor continuously inspects:
+- `/proc/net/tcp`, `/proc/net/tcp6`, `/proc/net/udp` for connection anomalies, SYN floods, and unexpected listening ports.
+- `/proc/[pid]/cmdline` for suspicious processes (`xmrig`, reverse shells, `ncat`, `socat`, `chisel`).
+- SHA-256 file integrity of `/etc/passwd`, `/etc/shadow`, `/etc/group`, `/etc/sudoers`, `/etc/ssh/sshd_config`, `/etc/crontab`, `/etc/hosts`.
+- `/var/log/auth.log`, `/var/log/secure`, `/var/log/syslog`, `/var/log/kern.log`, `/var/log/ufw.log` for SSH brute-force and `sudo` privilege escalation.
 
-**High memory usage**
-- LSTM models can be memory-intensive. Disable if not needed: `LSTM_ENABLED=false`
+You can also stream log lines from `rsyslog`/`fluent-bit` to `POST /host/log`.
 
-### Performance Tuning
+---
 
-For high-traffic environments:
+## 6. Network Monitoring Setup
 
-1. **Increase Kafka throughput** - Add more Kafka brokers
-2. **Scale backend** - Use Kubernetes or Docker Swarm for multiple instances
-3. **Database optimization** - TimescaleDB automatically handles time-series data
-4. **Caching** - Redis is already configured for alert deduplication
+Configured via `.env`:
+- `NETWORK_MONITORING_ENABLED=true`
+- `SENSOR_INTERFACE=any` (or comma-separated `eth0,cni0,flannel.1`)
+- `SENSOR_BPF_FILTER=ip`
 
-### Support and Maintenance
+Why `SENSOR_INTERFACE=any` with packet signature deduplication works for Kubernetes:
+- Sniffing on a single physical NIC misses east-west pod-to-pod traffic on `cni0`/`flannel.1`/`cali+`.
+- Sniffing on `any` captures both north-south and east-west traffic, while `FlowTable._recent_pkt_sigs` deduplicates identical packets traversing `veth` + bridge interfaces so flow counters remain accurate.
 
-- Check logs: `docker-compose logs -f backend`
-- Restart services: `docker-compose restart backend`
-- Update models: Retrain with new data and replace model files
-- Monitor disk space: Alert logs can grow over time
+---
 
-### Live Deployment Checklist
+## 7. Website, API & WAF Integration
 
-- [ ] Train all ML models
-- [ ] Test with replay scripts
-- [ ] Configure production `.env` settings
-- [ ] Set up SSL/TLS termination
-- [ ] Configure firewall rules
-- [ ] Set up monitoring and alerting
-- [ ] Test network capture (if using sensor)
-- [ ] Configure IDP blocking rules (if enabled)
-- [ ] Set up database backups
-- [ ] Document operational procedures
+Important architectural principle: **Network-flow ML classification operates on L3/L4 flow timings and packet lengths and cannot inspect TLS-encrypted HTTP payloads.**
+To inspect HTTP payloads post-TLS termination, integrate the built-in OWASP CRS WAF engine with your Kubernetes NGINX Ingress Controller:
+
+1. Enable ModSecurity & OWASP CRS on NGINX Ingress, or add the external auth subrequest annotation to any protected Ingress resource:
+
+```yaml
+metadata:
+  annotations:
+    nginx.ingress.kubernetes.io/enable-modsecurity: "true"
+    nginx.ingress.kubernetes.io/enable-owasp-core-rules: "true"
+    nginx.ingress.kubernetes.io/auth-url: "http://ai-ids-backend.ai-ids-system.svc.cluster.local:8000/waf/auth-verify"
+```
+
+2. Or forward reverse-proxy access logs / webhook payloads to `POST /waf/inspect`.
+
+---
+
+## 8. IDP Activation & Threat Response Policies
+
+Configured via `.env` or dynamically via `POST /idp/policy`:
+
+| Severity | Default Response Policy | Enforcement Layer |
+|----------|-------------------------|-------------------|
+| `CRITICAL` | Automatic block when `IDP_AUTO_BLOCK_CRITICAL=true` and `confidence >= IDP_CONFIDENCE_THRESHOLD` (`0.75`). | `iptables`/`nftables` (`AI_IDS_BLOCK` for `2 * IDP_BLOCK_SECONDS`) + WAF block |
+| `HIGH` | Automatic block when `IDP_AUTO_BLOCK_HIGH=true` and (`confidence >= IDP_CONFIDENCE_THRESHOLD` or corroborating hits `>= 2`). | `iptables`/`nftables` (`AI_IDS_BLOCK` for `IDP_BLOCK_SECONDS`) + WAF block |
+| `MEDIUM` | Monitor, correlate, and apply L7 `rate_limit` if repeated (`>= 3` events in 5m). Never blindly L3-dropped on first hit. | `rate_limit` |
+| `LOW` / `BENIGN` | Record and monitor only. Never blocked. | None |
+
+### Enforcement Modes (`IDP_ENFORCEMENT_MODE`)
+- `monitor`: Evaluates all rules and records `simulated` blocks in the dashboard without modifying host firewall rules.
+- `safe_enforce` (Default): Enforces temporary host firewall and WAF blocks with all 12 safety guardrails active.
+- `full_enforce`: Enables host firewall + WAF blocks + Kubernetes `NetworkPolicy` pod quarantine.
+
+---
+
+## 9. Firewall Enforcement Architecture & Allowlist Configuration
+
+The responder creates chain `AI_IDS_BLOCK` and inserts jump rules at the top of `INPUT`, `FORWARD`, and `DOCKER-USER` (if present). This guarantees that malicious external IPs are dropped both when targeting the Linux host (`INPUT`) and when targeting Kubernetes pods (`FORWARD`).
+
+Manage the allowlist via `.env` (`IDP_ALLOWLIST`, `IDP_MANAGEMENT_IPS`) or live API:
+
+```bash
+# Add trusted IP or CIDR
+curl -X POST http://localhost:8000/idp/allowlist \
+  -H "Content-Type: application/json" \
+  -d '{"ip_or_cidr": "203.0.113.10/32", "label": "Admin VPN Gateway", "is_management": true}'
+
+# List protected IPs
+curl http://localhost:8000/idp/allowlist
+```
+
+---
+
+## 10. Dashboard Operations Guide
+
+Open `http://localhost:3000`:
+- **Dashboard**: Infrastructure status bar (Linux Host, K8s Cluster, Nodes/NS, Pods/Apps, Sockets, IDP Status, OWASP WAF, Host Memory), real-time Threat Map, Attack Vectors, Severity Distribution, Top Attacking IPs, Most Targeted Ports, and Live Threat Stream.
+- **IDP & Incidents**: Emergency IDP Kill Switch, Enforcement Mode selector, Currently Blocked IPs with live TTL countdown & Manual Unblock, Manual Threat Containment form, Allowlist manager, Guardrail Audit History, and Correlated Multi-Layer Security Incidents.
+- **K8s, Host & WAF**: Auto-Discovered Kubernetes Application Inventory with one-click Pod Quarantine (`NetworkPolicy`), OWASP CRS WAF telemetry & rule testers, K8s Pod Audit findings, and Linux Host & File Integrity status.
+
+---
+
+## 11. Production Security Hardening
+
+- Internal ports (`5432`, `6379`, `9094`) are bound strictly to `127.0.0.1` in `docker-compose.yml` and isolated via `NetworkPolicy` in Kubernetes.
+- Enable API key enforcement for administrative endpoints by setting `API_AUTH_ENABLED=true` and passing `X-API-Key: <API_KEY>`.
+- `sensor` and `responder` drop all unnecessary Linux capabilities and retain only `CAP_NET_ADMIN` and `CAP_NET_RAW`.
+
+---
+
+## 12. Testing, Validation, Rollback & Troubleshooting
+
+```bash
+# Run full 16-test validation & latency benchmark suite
+python scripts/validate_full_system.py
+
+# Emergency rollback (disables IDP & flushes AI_IDS_BLOCK)
+./scripts/rollback_idp.sh
+```

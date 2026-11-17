@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
@@ -9,11 +10,9 @@ from uuid import uuid4
 import numpy as np
 
 from app.config import settings
-from app.detection.models import LoadedModels, vectorize_44
 from app.detection.lstm_onnx import TemporalLstmOnnxScorer
+from app.detection.models import LoadedModels, vectorize_44
 from app.schemas import AlertRecord, FlowRecord
-import time
-from datetime import datetime, timezone
 
 # Simple in-memory model metrics (running averages)
 _MODEL_METRICS: dict = {
@@ -22,16 +21,17 @@ _MODEL_METRICS: dict = {
     "lstm_onnx": {"invocations": 0, "avg_latency_ms": 0.0, "last_run": None},
 }
 
-def get_model_metrics():
-    # Return a shallow copy suitable for JSON encoding
+
+def get_model_metrics() -> Dict[str, Any]:
     out = {}
     for k, v in _MODEL_METRICS.items():
         out[k] = {
             "invocations": int(v.get("invocations", 0)),
-            "avg_latency_ms": float(v.get("avg_latency_ms", 0.0)),
+            "avg_latency_ms": round(float(v.get("avg_latency_ms", 0.0)), 3),
             "last_run": (v.get("last_run").isoformat() if v.get("last_run") else None),
         }
     return out
+
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ class Detector:
 
     def _scale(self, x: np.ndarray) -> np.ndarray:
         if self._models.scaler is None:
-            return x
+            return x.reshape(1, -1).astype(np.float32)
         return self._models.scaler.transform(x.reshape(1, -1)).astype(np.float32)
 
     def _isoforest(self, x_scaled: np.ndarray) -> Optional[float]:
@@ -64,34 +64,28 @@ class Detector:
             return None
 
         start = time.time()
-        # sklearn IsolationForest: score_samples higher = less anomalous.
-        # Convert to [0,1] anomaly score: 1 - normalized score.
         raw = float(self._models.isoforest.score_samples(x_scaled)[0])
-        # heuristic normalization using a clipped logistic to avoid overflow
         raw_c = float(np.clip(raw, -20.0, 20.0))
         score = 1.0 / (1.0 + float(np.exp(raw_c)))
         dur_ms = (time.time() - start) * 1000.0
         m = _MODEL_METRICS.get("isoforest")
         if m is not None:
             m["invocations"] += 1
-            # running average
             m["avg_latency_ms"] = ((m["avg_latency_ms"] * (m["invocations"] - 1)) + dur_ms) / m["invocations"]
             m["last_run"] = datetime.now(timezone.utc)
         return float(score)
 
-    def _xgboost(self, x_scaled: np.ndarray) -> tuple[Optional[str], Optional[float]]:
+    def _xgboost(self, x_raw: np.ndarray) -> tuple[Optional[str], Optional[float]]:
         if self._models.xgb_model is None:
             return None, None
 
         start = time.time()
-        dmat = None
         try:
             import xgboost as xgb
 
-            dmat = xgb.DMatrix(x_scaled)
+            dmat = xgb.DMatrix(x_raw.reshape(1, -1))
             proba = self._models.xgb_model.predict(dmat)
             if proba.ndim == 1:
-                # binary
                 conf = float(proba[0])
                 label_idx = int(conf >= 0.5)
                 label = str(label_idx)
@@ -131,12 +125,15 @@ class Detector:
         return float(res.recon_error)
 
     def detect(self, flow: FlowRecord) -> Optional[AlertRecord]:
+        if not settings.ids_enabled:
+            return None
+
         x = vectorize_44(flow.features)
         x_scaled = self._scale(x)
 
         sig = DetectionSignals()
         sig.isoforest_score = self._isoforest(x_scaled)
-        sig.xgb_label, sig.xgb_confidence = self._xgboost(x)  # Pass raw features to XGBoost
+        sig.xgb_label, sig.xgb_confidence = self._xgboost(x)
         sig.lstm_score = self._lstm_score(flow.src_ip, x_scaled)
 
         is_anomaly = False
@@ -148,9 +145,11 @@ class Detector:
             if sig.xgb_label.lower() not in {"benign", "normal", "0"} and sig.xgb_confidence >= settings.xgboost_confidence_threshold:
                 is_anomaly = True
                 label = sig.xgb_label
-                confidence = sig.xgb_confidence
+                confidence = float(sig.xgb_confidence)
+                # Multi-model consensus boost if IsolationForest also detects anomaly
+                if sig.isoforest_score is not None and sig.isoforest_score >= settings.isoforest_threshold:
+                    confidence = min(0.99, confidence + 0.04)
 
-        # Check if XGBoost confidently classified this flow as benign
         xgb_is_explicitly_benign = (
             sig.xgb_label is not None
             and sig.xgb_label.lower() in {"benign", "normal", "0"}
@@ -159,9 +158,7 @@ class Detector:
 
         # 2. Unsupervised Isolation Forest (Zero-Day Anomaly Detection)
         if sig.isoforest_score is not None and sig.isoforest_score >= settings.isoforest_threshold:
-            # If XGBoost is confident the traffic is benign normal traffic, require an extreme anomaly score (>= 0.88)
-            # to prevent normal background web/DNS/OS traffic from triggering false alarms on idle networks
-            min_score = 0.88 if xgb_is_explicitly_benign else 0.75
+            min_score = 0.88 if xgb_is_explicitly_benign else max(0.72, settings.isoforest_threshold)
             if not is_anomaly and sig.isoforest_score >= min_score:
                 is_anomaly = True
                 label = "Anomaly (Zero-Day)"
@@ -173,7 +170,21 @@ class Detector:
                 if not is_anomaly:
                     is_anomaly = True
                     label = "Anomaly (Temporal)"
-                    confidence = min(0.99, float(sig.lstm_score))
+                    confidence = min(0.99, max(0.75, float(sig.lstm_score)))
+
+        # 4. Flow-level Heuristic Safety Net (SYN flood / high packet rate / port scan signatures)
+        if not is_anomaly:
+            syn_cnt = float(flow.features.get("syn_flag_cnt", 0.0))
+            pkts_s = float(flow.features.get("flow_pkts_s", 0.0))
+            bwd_pkts = float(flow.features.get("tot_bwd_pkts", 0.0))
+            if syn_cnt >= 50 and pkts_s >= 500:
+                is_anomaly = True
+                label = "DDoS_SYN_Flood"
+                confidence = 0.92
+            elif syn_cnt >= 15 and bwd_pkts == 0 and pkts_s >= 100:
+                is_anomaly = True
+                label = "Port_Scan"
+                confidence = 0.86
 
         if not is_anomaly or label.lower() in {"benign", "normal", "0"}:
             return None
@@ -191,12 +202,13 @@ class Detector:
             protocol=flow.protocol,
             severity=severity,
             label=label,
-            confidence=float(confidence),
+            confidence=round(float(confidence), 4),
             signals={
-                "isoforest_score": sig.isoforest_score,
+                "layer": "network",
+                "isoforest_score": round(float(sig.isoforest_score), 4) if sig.isoforest_score is not None else None,
                 "xgb_label": sig.xgb_label,
-                "xgb_confidence": sig.xgb_confidence,
-                "lstm_score": sig.lstm_score,
+                "xgb_confidence": round(float(sig.xgb_confidence), 4) if sig.xgb_confidence is not None else None,
+                "lstm_score": round(float(sig.lstm_score), 4) if sig.lstm_score is not None else None,
             },
             geoip=None,
         )
@@ -204,10 +216,10 @@ class Detector:
 
 def _severity_for_label(label: str) -> str:
     l = (label or "").lower()
-    if any(k in l for k in ["ddos", "dos", "botnet", "synflood", "flood"]):
+    if any(k in l for k in ["ddos", "dos", "botnet", "synflood", "flood", "heartbleed", "hulk", "loit", "goldeneye", "ares", "command_injection", "sql"]):
         return "critical"
-    if any(k in l for k in ["portscan", "scan", "bruteforce", "ssh"]):
+    if any(k in l for k in ["portscan", "port_scan", "scan", "bruteforce", "brute", "patator", "ssh", "ftp", "xss", "traversal", "zero-day"]):
         return "high"
-    if any(k in l for k in ["sql", "xss", "ssrf", "injection", "waf", "web"]):
+    if any(k in l for k in ["ssrf", "injection", "waf", "web", "temporal", "anomaly"]):
         return "medium"
     return "low"

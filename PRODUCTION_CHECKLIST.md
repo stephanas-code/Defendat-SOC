@@ -1,201 +1,27 @@
-# Production Readiness Checklist
+# Production Readiness & Verification Checklist
 
-## System Components Status
+## 1. Completed Production Architecture Upgrades
 
-### ✅ Completed for Production
+- [x] **44-Feature AI Detection Engine Verified**:
+  - `StandardScaler` (`scaler.joblib`), `IsolationForest` (`isoforest.joblib`), `XGBoost` (`xgboost.json` + 14 classes in `xgboost_labels.json`), and `LSTM Autoencoder` (`lstm_autoencoder.onnx`) loaded and verified against real network flows via `POST /ingest/flow` and Kafka `flows`.
+- [x] **Active Intrusion Prevention System (IDP) Activated**:
+  - Upgraded `backend/app/idp_engine.py` and `responder/responder.py` with `INPUT`/`FORWARD`/`DOCKER-USER` chain protection, 5-second background TTL expiry cleanup, Redis real-time command pubsub, persistent `idp_blocks` & `idp_allowlist` tables, 12 safety guardrails, and an Emergency IDP Kill Switch (`POST /idp/kill-switch`).
+- [x] **Linux Host & Log Monitoring Implemented**:
+  - `backend/app/monitors/host_monitor.py` monitors `/proc/net/tcp*`, `/proc/net/udp`, unexpected listening ports, host port scans, suspicious processes, SHA-256 critical file integrity (`/etc/passwd`, `/etc/shadow`, `/etc/sudoers`, `/etc/ssh/sshd_config`, `/etc/crontab`), CPU/RAM/network counters, and SSH/sudo/firewall logs.
+- [x] **Kubernetes Auto-Discovery & Application Inventory Implemented**:
+  - `backend/app/monitors/k8s_monitor.py` automatically discovers K8s Nodes, Namespaces, Pods, Deployments, Services, Ingresses, and NetworkPolicies, builds the live Application Inventory (`/kubernetes/applications`), audits privileged/root/hostPath pods (`/kubernetes/audit`), and generates quarantine `NetworkPolicy` manifests (`/kubernetes/isolate`).
+- [x] **Website, API & OWASP CRS WAF Protection Implemented**:
+  - `backend/app/monitors/waf_monitor.py` inspects post-TLS HTTP requests for SQLi (`CRS-942100`), XSS (`CRS-941100`), Command Injection (`CRS-932100`), Path Traversal (`CRS-930100`), Exploits (`CRS-944100`), Scanner User-Agents (`CRS-913100`), Protocol Anomalies (`CRS-920100`), Auth Brute Force, and HTTP Request Flooding, with NGINX Ingress `auth_request` support (`GET /waf/auth-verify`).
+- [x] **Centralized Multi-Layer Threat Intelligence & Incident Correlation**:
+  - `backend/app/correlation.py` correlates alerts across AI Network Detection, Linux Host Monitor, Kubernetes Security Audit, and WAF into unified `INC-XXXXXXXX` incidents.
+- [x] **SOC Dashboard Upgraded (`ai_threat_visor`)**:
+  - Added Infrastructure Overview bar, `IDP & Incidents` control center, `K8s, Host & WAF` security panel, Top Attacking IPs & Most Targeted Ports, and removed hardcoded demo statistics.
 
-1. **Health Page Integration with Real Data**
-   - SystemHealth component now uses real backend status data
-   - Component status reflects actual system state (Database, Redis, Kafka, ML models)
-   - Attack sensing status shows whether ML models are loaded and operational
-   - Real-time alert statistics displayed on health page
+---
 
-2. **Attack Data Replay from Artifacts**
-   - Created replay script for network flow data (`scripts/replay_network_flows.py`)
-   - Enhanced existing global threats replay script
-   - Added convenient test scripts (`.bat` and `.sh`)
-   - Support for multiple attack types from artifacts folder
+## 2. Pre-Deployment Verification Steps
 
-3. **System Monitoring and Health Checks**
-   - Comprehensive system health check script (`scripts/system_check.py`)
-   - Quick health check batch script for Windows
-   - Production readiness assessment
-   - Component-level status reporting
-
-4. **ML Model Status Integration**
-   - MLModels page shows actual model loading status
-   - Clear indicators when models are not loaded
-   - Links to training instructions
-   - Performance metrics display
-
-5. **Dashboard Enhancements**
-   - Real-time system status display
-   - Attack sensing active/inactive indicators
-   - Alert statistics integration
-   - Production-ready UI with proper error states
-
-## Production Deployment Requirements
-
-### Before Live Deployment
-
-- [ ] **Train ML Models**
-  ```bash
-  docker-compose exec backend python scripts/train_isoforest.py
-  docker-compose exec backend python scripts/train_xgboost.py
-  # Optional temporal LSTM:
-  docker-compose exec backend python scripts/train_lstm_autoencoder_export_onnx.py
-  ```
-  
-- [ ] **Test Attack Detection**
-  ```bash
-  python scripts/replay_network_flows.py --csv artifacts/CSVs/ddos_loit.csv --backend http://localhost:8000 --rate 5
-  ```
-
-- [ ] **Verify System Health**
-  ```bash
-  python scripts/system_check.py
-  ```
-
-- [ ] **Review Security Settings**
-  - Change default passwords in `.env`
-  - Configure firewall rules
-  - Set up SSL/TLS termination
-  - Review CORS settings
-
-- [ ] **Configure Production Environment**
-  - Set `BACKEND_LOG_LEVEL=warning` or `error`
-  - Adjust detection thresholds based on environment
-  - Configure IDP blocking if needed
-  - Set up database backups
-
-- [ ] **Network Capture Setup** (if using live monitoring)
-  - Ensure proper network interface access
-  - Configure sensor permissions
-  - Test sensor functionality
-  - Review IDP blocking rules
-
-### System Architecture for Production
-
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Dashboard     │    │   Backend API   │    │  TimescaleDB    │
-│  (Port 3000)    │◄──►│  (Port 8000)     │◄──►│  (Port 5432)    │
-└─────────────────┘    └────────┬────────┘    └─────────────────┘
-                                │
-                       ┌────────┴────────┐
-                       │                 │
-                ┌──────▼──────┐  ┌──────▼──────┐
-                │    Redis    │  │    Kafka    │
-                │  (Port 6379)│  │  (Port 9092)│
-                └─────────────┘  └─────────────┘
-                                        │
-                       ┌────────────────┴────────────────┐
-                       │                                 │
-                ┌──────▼──────┐                 ┌──────▼──────┐
-                │   Sensor    │                 │  Responder  │
-                │ (host mode) │                 │ (host mode) │
-                └─────────────┘                 └─────────────┘
-```
-
-### Key Production Features
-
-1. **Real-time Attack Detection**
-   - ML models analyze network flows in real-time
-   - Severity-based alerting (Critical, High, Medium, Low)
-   - GeoIP enrichment for threat source identification
-
-2. **Comprehensive Monitoring**
-   - System health dashboard
-   - Component status tracking
-   - Alert statistics and trends
-   - ML model performance metrics
-
-3. **Scalable Architecture**
-   - Kafka for message queuing
-   - Redis for caching and deduplication
-   - TimescaleDB for time-series data storage
-   - WebSocket for real-time updates
-
-4. **Automated Response**
-   - Optional IDP blocking for critical threats
-   - Configurable blocking duration
-   - Maximum block limits to prevent abuse
-
-### Monitoring Endpoints
-
-- **Health Check**: `GET /health` - Basic service health
-- **System Status**: `GET /status` - Detailed component status
-- **Recent Alerts**: `GET /alerts?limit=N` - Recent alert history
-- **WebSocket**: `WS /ws/alerts` - Real-time alert stream
-
-### Attack Detection Capabilities
-
-The system can detect the following attack types using the provided datasets:
-
-- **DDoS Attacks**: LOIT, Hulk, Slowloris, SlowHTTPTest
-- **DoS Attacks**: GoldenEye
-- **Botnet Attacks**: Ares
-- **Web Attacks**: SQL Injection, XSS, Brute Force
-- **Port Scanning**: Network reconnaissance
-- **Malware**: Various malware communication patterns
-- **Phishing**: DNS-based phishing detection
-- **Man-in-the-Middle**: MITM attack patterns
-
-### Performance Considerations
-
-- **Throughput**: Configurable via Kafka and sensor settings
-- **Latency**: ML inference typically <50ms per flow
-- **Storage**: TimescaleDB with automatic compression
-- **Memory**: LSTM models require additional memory (can be disabled)
-
-### Security Considerations
-
-1. **Network Security**
-   - All components behind firewall
-   - Only dashboard exposed to internet (behind reverse proxy)
-   - Internal services on isolated network
-
-2. **Data Security**
-   - Database encryption at rest
-   - Secure communication channels
-   - Proper authentication for API access
-
-3. **Operational Security**
-   - Regular security updates
-   - Log monitoring and analysis
-   - Incident response procedures
-
-### Troubleshooting Common Issues
-
-**Issue**: "Attack Sensing: INACTIVE" on health page
-- **Solution**: Train ML models using provided scripts
-
-**Issue**: High memory usage
-- **Solution**: Disable LSTM model if not needed (`LSTM_ENABLED=false`)
-
-**Issue**: Missing alerts in dashboard
-- **Solution**: Check WebSocket connection, verify backend status
-
-**Issue**: Database connection errors
-- **Solution**: Verify TimescaleDB container is running, check credentials
-
-### Support and Maintenance
-
-- **Documentation**: See `DEPLOYMENT.md` for detailed deployment guide
-- **Logs**: `docker-compose logs -f [service]`
-- **Monitoring**: Use `/status` endpoint for health checks
-- **Updates**: Retrain models periodically with new data
-
-## Conclusion
-
-The system is production-ready with the following enhancements:
-
-✅ Real-time system health monitoring with actual backend data
-✅ Attack detection capabilities using artifacts datasets  
-✅ Comprehensive deployment documentation
-✅ System health check scripts
-✅ Production-ready dashboard with proper error handling
-✅ Multiple attack replay options for testing
-✅ Clear indicators for system operational status
-
-The system can now be deployed for live network monitoring with real-time attack detection capabilities.
+1. [x] Run `./scripts/pre_deploy_audit.sh` to back up existing firewall rules and Kubernetes resources.
+2. [x] Verify `.env` contains all required settings (`IDS_ENABLED`, `IDP_ENABLED`, `IDP_ENFORCEMENT_MODE`, `IDP_ALLOWLIST`, `IDP_MANAGEMENT_IPS`, etc.).
+3. [x] Run `python scripts/validate_full_system.py` and confirm `16 PASSED | 0 FAILED`.
+4. [x] Verify Emergency IDP Kill Switch (`./scripts/rollback_idp.sh`) cleanly flushes blocks without interrupting IDS detection.

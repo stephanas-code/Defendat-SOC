@@ -1,6 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  CorrelatedIncident,
   DashboardStats,
+  DiscoveredApp,
+  IdpAllowlistEntry,
+  IdpBlockEntry,
   MLModelStats,
   NetworkAlert,
   PersistenceStatus,
@@ -37,6 +41,11 @@ type ApiStatus = {
     database?: { ok: boolean };
     redis?: { ok: boolean };
     kafka?: { ok: boolean };
+    ids?: { ok: boolean; enabled?: boolean };
+    idp?: { ok: boolean; enabled?: boolean; mode?: string; active_blocks?: number };
+    waf?: { ok: boolean; enabled?: boolean; mode?: string };
+    kubernetes?: { ok: boolean; status?: string };
+    host?: { ok: boolean; status?: string };
   };
   models?: {
     scaler?: boolean;
@@ -45,6 +54,7 @@ type ApiStatus = {
     lstm_onnx?: boolean;
   };
   model_metrics?: Record<string, {
+    invocations?: number;
     avg_latency_ms?: number;
     last_run?: string;
   }>;
@@ -61,14 +71,136 @@ type ApiStatus = {
     last_flow_at: string | null;
     table_bytes: number;
   };
+  idp?: {
+    enabled: boolean;
+    enforcement_mode: string;
+    kill_switch_engaged: boolean;
+    active_blocks_count: number;
+    failed_attempts_count: number;
+    allowlist_count: number;
+  };
+  infrastructure?: {
+    server_status: string;
+    cluster_status: string;
+    monitored_nodes: number;
+    monitored_namespaces: number;
+    monitored_pods: number;
+    monitored_applications: number;
+    active_connections: number;
+    established_connections: number;
+    cpu_load_pct: number;
+    memory_used_pct: number;
+    incidents_open: number;
+  };
+  waf?: {
+    enabled: boolean;
+    total_inspected: number;
+    http_attacks_detected: number;
+    blocked_requests_count: number;
+    rate_limited_count: number;
+  };
+};
+
+export type IdpFullStatus = {
+  enabled: boolean;
+  enforcement_mode: string;
+  kill_switch_engaged: boolean;
+  firewall_backend: string;
+  chain: string;
+  block_seconds: number;
+  max_blocks: number;
+  confidence_threshold: number;
+  auto_block_critical: boolean;
+  auto_block_high: boolean;
+  active_blocks_count: number;
+  history_blocks_count: number;
+  failed_attempts_count: number;
+  active_blocks: IdpBlockEntry[];
+  recent_history: IdpBlockEntry[];
+  allowlist: IdpAllowlistEntry[];
+  system_protected_ips: string[];
+};
+
+export type K8sFullStatus = {
+  connected: boolean;
+  discovery_mode: string;
+  cluster_status: string;
+  nodes_count: number;
+  namespaces_count: number;
+  pods_count: number;
+  deployments_count: number;
+  services_count: number;
+  ingresses_count: number;
+  network_policies_count: number;
+  applications_count: number;
+  nodes: Array<{ name: string; ip: string; status: string; kubelet_version: string; security_status: string }>;
+  namespaces: string[];
+  suspicious_pods: Array<{ pod: string; namespace: string; issue: string; severity: string; pod_ip: string; timestamp?: string }>;
+  isolated_workloads: Array<{ isolation_id: string; namespace: string; workload: string; reason: string; status: string; created_at: string }>;
+  audit_alerts_count: number;
+  audit_alerts?: Array<{ timestamp: string; user: string; verb: string; namespace: string; resource: string; source_ip: string; severity: string; category: string; summary: string }>;
+  last_discovery_at: string | null;
+};
+
+export type HostFullStatus = {
+  status: string;
+  cpu_load_pct: number;
+  memory_used_pct: number;
+  memory_total_mb: number;
+  memory_used_mb: number;
+  active_connections: number;
+  established_connections: number;
+  listening_ports: number[];
+  unexpected_ports: number[];
+  running_processes: number;
+  suspicious_processes: Array<{ pid: number; cmdline: string; pattern: string }>;
+  file_integrity_status: string;
+  monitored_files_count: number;
+  modified_files: string[];
+  cron_jobs_count: number;
+  ssh_failed_attempts: number;
+  network_rx_mb: number;
+  network_tx_mb: number;
+  last_scan_at: string | null;
+};
+
+export type WafFullStatus = {
+  enabled: boolean;
+  mode: string;
+  total_inspected: number;
+  http_attacks_detected: number;
+  sqli_count: number;
+  xss_count: number;
+  path_traversal_count: number;
+  command_injection_count: number;
+  brute_force_count: number;
+  bot_scanner_count: number;
+  rate_limited_count: number;
+  blocked_requests_count: number;
+  recent_detections: Array<{
+    detection_id: string;
+    timestamp: string;
+    rule_id: string;
+    category: string;
+    severity: string;
+    confidence: number;
+    src_ip: string;
+    host: string;
+    target_app: string;
+    namespace: string;
+    method: string;
+    uri: string;
+    user_agent: string;
+    action: string;
+  }>;
 };
 
 const DEFAULT_HTTP = 'http://localhost:8000';
 
 const MODEL_DEFS = [
-  { key: 'xgboost', name: 'XGBoost Classifier', accuracy: 0.984, f1Score: 0.982 },
-  { key: 'isoforest', name: 'Isolation Forest', accuracy: 0.912, f1Score: 0.895 },
-  { key: 'lstm_onnx', name: 'LSTM Autoencoder', accuracy: 0.948, f1Score: 0.932 },
+  { key: 'xgboost', name: 'XGBoost Classifier' },
+  { key: 'isoforest', name: 'Isolation Forest' },
+  { key: 'lstm_onnx', name: 'LSTM Autoencoder' },
 ];
 
 const SEVERITY_MAP: Record<string, NetworkAlert['severity']> = {
@@ -134,51 +266,21 @@ const isPrivateIp = (ip: string): boolean => {
   return false;
 };
 
-const COUNTRIES = ['United States', 'China', 'Germany', 'Russia', 'Netherlands', 'United Kingdom', 'France', 'Japan', 'Ukraine', 'Brazil'];
-
-const hashIpToCoords = (ip: string): [number, number] => {
-  let hash = 0;
-  for (let i = 0; i < ip.length; i++) {
-    hash = ip.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  const lat = ((Math.abs(hash) % 95) - 40);
-  const lng = ((Math.abs(hash >> 8) % 240) - 100);
-  return [lat, lng];
-};
-
-const hashIpToLocation = (ip: string): string => {
-  let hash = 0;
-  for (let i = 0; i < ip.length; i++) {
-    hash = ip.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  return COUNTRIES[Math.abs(hash) % COUNTRIES.length];
-};
-
 const toAlert = (item: ApiAlert): NetworkAlert => {
   const geo = item.geoip || {};
   const signals = item.signals || {};
-  const signalCountry = typeof signals.country === 'string' ? signals.country : undefined;
   const isPrivate = isPrivateIp(item.src_ip);
 
-  let location = 'Unknown';
-  let coords: [number, number] = [37.7749, -122.4194];
+  let location = 'Unresolved IP';
+  let coords: [number, number] | undefined = undefined;
 
   if (isPrivate || geo.country_iso === 'LAN' || geo.country_name === 'Local Network (LAN)') {
     location = 'Local Network (LAN)';
-    coords = [37.7749, -122.4194];
   } else if (geo.country_name && geo.country_name !== 'Unknown Region') {
     location = geo.city_name && geo.city_name !== 'Unknown City' ? `${geo.city_name}, ${geo.country_name}` : geo.country_name;
-    if (geo.latitude !== null && geo.latitude !== undefined && geo.longitude !== null && geo.longitude !== undefined) {
+    if (typeof geo.latitude === 'number' && typeof geo.longitude === 'number') {
       coords = [geo.latitude, geo.longitude];
-    } else {
-      coords = hashIpToCoords(item.src_ip);
     }
-  } else if (signalCountry) {
-    location = signalCountry;
-    coords = hashIpToCoords(item.src_ip);
-  } else {
-    location = 'Local Network (LAN)';
-    coords = [37.7749, -122.4194];
   }
 
   return {
@@ -196,6 +298,9 @@ const toAlert = (item: ApiAlert): NetworkAlert => {
     location,
     countryCode: isPrivate ? 'LAN' : (geo.country_iso || undefined),
     coordinates: coords,
+    incidentId: typeof signals.incident_id === 'string' ? signals.incident_id : undefined,
+    detectionSource: typeof signals.detection_source === 'string' ? signals.detection_source : (typeof signals.layer === 'string' ? signals.layer : 'AI Network Flow'),
+    idpAction: typeof signals.idp_action === 'string' ? signals.idp_action : undefined,
   };
 };
 
@@ -203,6 +308,12 @@ export function useNetworkData() {
   const [alerts, setAlerts] = useState<NetworkAlert[]>([]);
   const [isCapturing, setIsCapturing] = useState(true);
   const [backendStatus, setBackendStatus] = useState<ApiStatus | null>(null);
+  const [idpStatus, setIdpStatus] = useState<IdpFullStatus | null>(null);
+  const [incidents, setIncidents] = useState<CorrelatedIncident[]>([]);
+  const [k8sStatus, setK8sStatus] = useState<K8sFullStatus | null>(null);
+  const [applications, setApplications] = useState<DiscoveredApp[]>([]);
+  const [hostStatus, setHostStatus] = useState<HostFullStatus | null>(null);
+  const [wafStatus, setWafStatus] = useState<WafFullStatus | null>(null);
   const [wsConnected, setWsConnected] = useState(false);
 
   const backendHttp = useMemo(() => {
@@ -215,44 +326,57 @@ export function useNetworkData() {
     return env ? env : resolveWsUrl(backendHttp);
   }, [backendHttp]);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    const loadAlerts = async () => {
-      try {
-        const res = await fetch(`${backendHttp}/alerts?limit=200`, { signal: controller.signal });
-        if (!res.ok) return;
-        const payload = await res.json();
+  const refreshAll = useCallback(async () => {
+    try {
+      const [statusRes, alertsRes, idpRes, incRes, k8sRes, appsRes, hostRes, wafRes] = await Promise.allSettled([
+        fetch(`${backendHttp}/status`),
+        fetch(`${backendHttp}/alerts?limit=200`),
+        fetch(`${backendHttp}/idp/status`),
+        fetch(`${backendHttp}/incidents?limit=100`),
+        fetch(`${backendHttp}/kubernetes/status`),
+        fetch(`${backendHttp}/kubernetes/applications`),
+        fetch(`${backendHttp}/host/status`),
+        fetch(`${backendHttp}/waf/status`),
+      ]);
+
+      if (statusRes.status === 'fulfilled' && statusRes.value.ok) {
+        setBackendStatus((await statusRes.value.json()) as ApiStatus);
+      }
+      if (alertsRes.status === 'fulfilled' && alertsRes.value.ok) {
+        const payload = await alertsRes.value.json();
         const items = Array.isArray(payload?.items) ? payload.items : [];
-        const mapped = items.map((item: ApiAlert) => toAlert(item));
-        setAlerts(mapped);
-      } catch (err) {
-        // network errors are handled by keeping the existing cache
+        setAlerts(items.map((item: ApiAlert) => toAlert(item)));
       }
-    };
-    loadAlerts();
-    return () => controller.abort();
+      if (idpRes.status === 'fulfilled' && idpRes.value.ok) {
+        setIdpStatus((await idpRes.value.json()) as IdpFullStatus);
+      }
+      if (incRes.status === 'fulfilled' && incRes.value.ok) {
+        const payload = await incRes.value.json();
+        setIncidents(Array.isArray(payload?.items) ? payload.items : []);
+      }
+      if (k8sRes.status === 'fulfilled' && k8sRes.value.ok) {
+        setK8sStatus((await k8sRes.value.json()) as K8sFullStatus);
+      }
+      if (appsRes.status === 'fulfilled' && appsRes.value.ok) {
+        const payload = await appsRes.value.json();
+        setApplications(Array.isArray(payload?.items) ? payload.items : []);
+      }
+      if (hostRes.status === 'fulfilled' && hostRes.value.ok) {
+        setHostStatus((await hostRes.value.json()) as HostFullStatus);
+      }
+      if (wafRes.status === 'fulfilled' && wafRes.value.ok) {
+        setWafStatus((await wafRes.value.json()) as WafFullStatus);
+      }
+    } catch {
+      // keep existing cached state on transient network error
+    }
   }, [backendHttp]);
 
   useEffect(() => {
-    let active = true;
-    const loadStatus = async () => {
-      try {
-        const res = await fetch(`${backendHttp}/status`);
-        if (!res.ok) throw new Error('status_failed');
-        const payload = (await res.json()) as ApiStatus;
-        if (active) setBackendStatus(payload);
-      } catch (err) {
-        if (active) setBackendStatus(null);
-      }
-    };
-
-    loadStatus();
-    const interval = window.setInterval(loadStatus, 10000);
-    return () => {
-      active = false;
-      window.clearInterval(interval);
-    };
-  }, [backendHttp]);
+    refreshAll();
+    const interval = window.setInterval(refreshAll, 5000);
+    return () => window.clearInterval(interval);
+  }, [refreshAll]);
 
   useEffect(() => {
     if (!isCapturing) {
@@ -290,10 +414,16 @@ export function useNetworkData() {
           setAlerts([]);
           return;
         }
-        const payload = data as ApiAlert;
-        const mapped = toAlert(payload);
-        setAlerts((prev) => [mapped, ...prev].slice(0, 200));
-      } catch (err) {
+        if (data && (data.type === 'idp_action' || data.type === 'idp_kill_switch')) {
+          refreshAll();
+          return;
+        }
+        if (data && data.alert_id) {
+          const payload = data as ApiAlert;
+          const mapped = toAlert(payload);
+          setAlerts((prev) => [mapped, ...prev.filter((a) => a.id !== mapped.id)].slice(0, 200));
+        }
+      } catch {
         // ignore malformed payloads
       }
     };
@@ -302,9 +432,10 @@ export function useNetworkData() {
       if (keepAlive) window.clearInterval(keepAlive);
       ws.close();
     };
-  }, [backendWs, isCapturing]);
+  }, [backendWs, isCapturing, refreshAll]);
 
   const stats = useMemo<DashboardStats>(() => {
+    const inf = backendStatus?.infrastructure;
     return {
       alertsTotal: backendStatus?.alerts?.total ?? null,
       alertsLastHour: backendStatus?.alerts?.last_1h ?? null,
@@ -313,6 +444,28 @@ export function useNetworkData() {
       lastAlertAt: backendStatus?.alerts?.last_alert_at ?? null,
       alertTableBytes: backendStatus?.alerts?.table_bytes ?? null,
       flowsTotal: backendStatus?.flows?.total ?? null,
+      infrastructure: inf
+        ? {
+            serverStatus: inf.server_status,
+            clusterStatus: inf.cluster_status,
+            monitoredNodes: inf.monitored_nodes,
+            monitoredNamespaces: inf.monitored_namespaces,
+            monitoredPods: inf.monitored_pods,
+            monitoredApplications: inf.monitored_applications,
+            activeConnections: inf.active_connections,
+            establishedConnections: inf.established_connections,
+            cpuLoadPct: inf.cpu_load_pct,
+            memoryUsedPct: inf.memory_used_pct,
+            incidentsOpen: inf.incidents_open,
+            idsEnabled: backendStatus?.components?.ids?.enabled ?? true,
+            idpEnabled: backendStatus?.idp?.enabled ?? true,
+            idpMode: backendStatus?.idp?.enforcement_mode ?? 'safe_enforce',
+            idpActiveBlocks: backendStatus?.idp?.active_blocks_count ?? 0,
+            wafEnabled: backendStatus?.waf?.enabled ?? true,
+            wafDetected: backendStatus?.waf?.http_attacks_detected ?? 0,
+            wafBlocked: backendStatus?.waf?.blocked_requests_count ?? 0,
+          }
+        : undefined,
     };
   }, [backendStatus]);
 
@@ -331,10 +484,11 @@ export function useNetworkData() {
     return MODEL_DEFS.map((model) => ({
       name: model.name,
       status: backendStatus?.models?.[model.key as keyof ApiStatus['models']] ? 'loaded' : 'offline',
-      accuracy: model.accuracy,
-      f1Score: model.f1Score,
+      accuracy: null,
+      f1Score: null,
       latency: backendStatus?.model_metrics?.[model.key]?.avg_latency_ms ?? null,
-      lastRun: backendStatus?.model_metrics?.[model.key]?.last_run ?? backendStatus?.alerts?.last_alert_at ?? null,
+      invocations: backendStatus?.model_metrics?.[model.key]?.invocations ?? 0,
+      lastRun: backendStatus?.model_metrics?.[model.key]?.last_run ?? null,
     }));
   }, [backendStatus]);
 
@@ -342,19 +496,11 @@ export function useNetworkData() {
     const dbOk = backendStatus?.components?.database?.ok;
     const redisOk = backendStatus?.components?.redis?.ok;
     const kafkaOk = backendStatus?.components?.kafka?.ok;
+    const idpOk = backendStatus?.components?.idp?.ok;
+    const wafOk = backendStatus?.components?.waf?.ok;
+    const k8sOk = backendStatus?.components?.kubernetes?.ok;
     const lastAlertAt = stats.lastAlertAt || (alerts[0] ? alerts[0].timestamp : null);
     const lastAlertAge = timeAgo(lastAlertAt);
-
-    let sensorStatus: SystemComponentHealth['status'] = 'unknown';
-    if (lastAlertAt) {
-      const ts = Date.parse(lastAlertAt);
-      if (!Number.isNaN(ts)) {
-        const ageMs = Date.now() - ts;
-        if (ageMs <= 2 * 60 * 1000) sensorStatus = 'online';
-        else if (ageMs <= 10 * 60 * 1000) sensorStatus = 'degraded';
-        else sensorStatus = 'offline';
-      }
-    }
 
     return [
       {
@@ -363,29 +509,41 @@ export function useNetworkData() {
         detail: backendStatus ? 'reachable' : 'unreachable',
       },
       {
-        component: 'WebSocket Stream',
-        status: wsConnected ? 'online' : 'offline',
-        detail: wsConnected ? 'connected' : 'disconnected',
+        component: 'IDP Enforcement',
+        status: idpOk ? 'online' : 'degraded',
+        detail: backendStatus?.idp ? `${backendStatus.idp.enforcement_mode} (${backendStatus.idp.active_blocks_count} blocked)` : 'standby',
       },
       {
-        component: 'Kafka Broker',
+        component: 'OWASP WAF Engine',
+        status: wafOk ? 'online' : 'offline',
+        detail: backendStatus?.waf ? `${backendStatus.waf.http_attacks_detected} threats caught` : 'ready',
+      },
+      {
+        component: 'Kubernetes Monitor',
+        status: k8sOk ? 'online' : 'offline',
+        detail: k8sOk
+          ? `${backendStatus?.infrastructure?.monitored_nodes ?? 0} nodes / ${backendStatus?.infrastructure?.monitored_pods ?? 0} pods`
+          : 'K8s API not connected',
+      },
+      {
+        component: 'Kafka Event Bus',
         status: kafkaOk === undefined ? 'unknown' : kafkaOk ? 'online' : 'offline',
-        detail: kafkaOk === undefined ? 'no data' : kafkaOk ? 'healthy' : 'unreachable',
+        detail: kafkaOk ? 'healthy' : 'unreachable',
       },
       {
-        component: 'Redis Cache',
+        component: 'Redis Dedup & Sync',
         status: redisOk === undefined ? 'unknown' : redisOk ? 'online' : 'offline',
-        detail: redisOk === undefined ? 'no data' : redisOk ? 'healthy' : 'unreachable',
+        detail: redisOk ? 'healthy' : 'unreachable',
       },
       {
         component: 'TimescaleDB',
         status: dbOk === undefined ? 'unknown' : dbOk ? 'online' : 'offline',
-        detail: dbOk === undefined ? 'no data' : dbOk ? 'healthy' : 'unreachable',
+        detail: dbOk ? 'healthy' : 'unreachable',
       },
       {
-        component: 'Sensor Activity',
-        status: sensorStatus,
-        detail: lastAlertAge ? `last alert ${lastAlertAge}` : 'no alerts yet',
+        component: 'WebSocket Stream',
+        status: wsConnected ? 'online' : 'offline',
+        detail: lastAlertAge ? `last alert ${lastAlertAge}` : (wsConnected ? 'connected' : 'disconnected'),
       },
     ];
   }, [alerts, backendStatus, stats.lastAlertAt, wsConnected]);
@@ -393,29 +551,11 @@ export function useNetworkData() {
   const clearAlerts = async () => {
     try {
       await fetch(`${backendHttp}/alerts`, { method: 'DELETE' });
-    } catch (err) {
+    } catch {
       // ignore
     }
     setAlerts([]);
-    setBackendStatus((prev) => {
-      if (!prev) return null;
-      return {
-        ...prev,
-        alerts: {
-          total: 0,
-          last_1h: 0,
-          last_24h: 0,
-          critical_total: 0,
-          last_alert_at: null,
-          table_bytes: 0,
-        },
-        flows: {
-          total: 0,
-          last_flow_at: null,
-          table_bytes: 0,
-        },
-      };
-    });
+    refreshAll();
   };
 
   return {
@@ -428,5 +568,13 @@ export function useNetworkData() {
     systemHealth,
     stats,
     backendStatus,
+    idpStatus,
+    incidents,
+    k8sStatus,
+    applications,
+    hostStatus,
+    wafStatus,
+    refreshAll,
+    backendHttp,
   };
 }

@@ -11,8 +11,8 @@ services:
     depends_on:
       - zookeeper
     ports:
-      # Host-network sensor/responder connect here (see implementation.md)
-      - "9094:9094"
+      # Bound to 127.0.0.1 so Kafka is never exposed publicly on 0.0.0.0
+      - "127.0.0.1:9094:9094"
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
@@ -27,7 +27,14 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      # Bound to 127.0.0.1 only for host-mode responder synchronization
+      - "127.0.0.1:6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
   timescaledb:
     image: timescale/timescaledb:2.15.3-pg16
@@ -36,9 +43,16 @@ services:
       - POSTGRES_USER=${POSTGRES_USER:-ids}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-ids}
     ports:
-      - "5432:5432"
+      # Bound to 127.0.0.1 only — never expose database publicly
+      - "127.0.0.1:5432:5432"
     volumes:
       - timescaledb_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ids} -d ${POSTGRES_DB:-ids}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   backend:
     build:
@@ -59,6 +73,12 @@ services:
       - ./data:/data
       - ./scripts:/app/scripts
       - ./backend/app:/app/app
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
   responder:
     build:
@@ -68,10 +88,14 @@ services:
     environment:
       - KAFKA_BROKERS=localhost:9094
       - KAFKA_GROUP_ID=responder
+      - REDIS_HOST=localhost
+      - REDIS_PORT=6379
     profiles:
       - capture
     network_mode: host
-    privileged: true
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
     restart: unless-stopped
 
   sensor:
@@ -99,6 +123,7 @@ services:
       - "5173:5173"
     depends_on:
       - backend
+    restart: unless-stopped
 
   ai_threat_visor:
     build:
@@ -113,7 +138,7 @@ services:
       - ./ai_threat_visor/public:/app/public
     depends_on:
       - backend
+    restart: unless-stopped
 
 volumes:
   timescaledb_data:
-

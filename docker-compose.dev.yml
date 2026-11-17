@@ -1,34 +1,123 @@
-version: '3.8'
 services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    restart: unless-stopped
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "127.0.0.1:9094:9094"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:9094
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    restart: unless-stopped
+
+  timescaledb:
+    image: timescale/timescaledb:2.15.3-pg16
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-ids}
+      - POSTGRES_USER=${POSTGRES_USER:-ids}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-ids}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
   backend:
     build:
       context: ./backend
     env_file:
       - ./.env
+    depends_on:
+      - redis
+      - timescaledb
+      - kafka
     ports:
       - "8000:8000"
     volumes:
       - ./artifacts:/artifacts:ro
       - ./data:/data:ro
+      - ./scripts:/app/scripts
+      - ./backend/app:/app/app
+    restart: unless-stopped
+
+  responder:
+    build:
+      context: ./responder
+    env_file:
+      - ./.env
+    environment:
+      - KAFKA_BROKERS=localhost:9094
+      - KAFKA_GROUP_ID=responder
+      - REDIS_HOST=localhost
+      - REDIS_PORT=6379
+    profiles:
+      - capture
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    restart: unless-stopped
+
+  sensor:
+    build:
+      context: ./sensor
+    env_file:
+      - ./.env
+    environment:
+      - KAFKA_BROKERS=localhost:9094
+    profiles:
+      - capture
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    restart: unless-stopped
 
   frontend:
     build:
       context: ./frontend
     environment:
-      - VITE_BACKEND_HTTP=http://host.docker.internal:8000
-      - VITE_BACKEND_WS=ws://host.docker.internal:8000/ws/alerts
+      - VITE_BACKEND_HTTP=http://localhost:8000
+      - VITE_BACKEND_WS=ws://localhost:8000/ws/alerts
     ports:
       - "5173:5173"
     depends_on:
       - backend
+    restart: unless-stopped
 
   ai_threat_visor:
     build:
       context: ./ai_threat_visor
     environment:
-      - VITE_BACKEND_HTTP=http://host.docker.internal:8000
-      - VITE_BACKEND_WS=ws://host.docker.internal:8000/ws/alerts
+      - VITE_BACKEND_HTTP=http://localhost:8000
+      - VITE_BACKEND_WS=ws://localhost:8000/ws/alerts
     ports:
       - "3000:3000"
+    volumes:
+      - ./ai_threat_visor/src:/app/src
+      - ./ai_threat_visor/public:/app/public
     depends_on:
       - backend
+    restart: unless-stopped
+
+volumes:
+  timescaledb_data:

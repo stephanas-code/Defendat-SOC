@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+from collections import deque
 import logging
 import os
 import threading
 import time
-from typing import Dict, Tuple
+from typing import Deque, Dict, List, Optional, Tuple
 
 from scapy.all import sniff
-from scapy.layers.inet import IP, TCP, UDP
+from scapy.layers.inet import ICMP, IP, TCP, UDP
 
 from sensor.config import settings
 from sensor.flow import Flow, new_flow
@@ -24,6 +25,8 @@ class FlowTable:
     def __init__(self) -> None:
         self._by_key: Dict[FlowKey, Flow] = {}
         self._lock = threading.Lock()
+        # Deduplicate identical packets seen across veth + CNI bridge when sniffing on 'any'
+        self._recent_pkt_sigs: Deque[Tuple[str, str, int, int, int, int]] = deque(maxlen=512)
 
     def _get_or_create(self, fwd_key: FlowKey, rev_key: FlowKey, proto: str, ts: float) -> tuple[Flow, str]:
         with self._lock:
@@ -40,19 +43,33 @@ class FlowTable:
         proto = "OTHER"
         src_port = 0
         dst_port = 0
+        seq_or_id = int(getattr(ip_pkt, "id", 0))
         if ip_pkt.haslayer(TCP):
             proto = "TCP"
             src_port = int(ip_pkt[TCP].sport)
             dst_port = int(ip_pkt[TCP].dport)
+            seq_or_id = int(getattr(ip_pkt[TCP], "seq", seq_or_id))
         elif ip_pkt.haslayer(UDP):
             proto = "UDP"
             src_port = int(ip_pkt[UDP].sport)
             dst_port = int(ip_pkt[UDP].dport)
+        elif ip_pkt.haslayer(ICMP):
+            proto = "ICMP"
+            src_port = int(getattr(ip_pkt[ICMP], "type", 0))
+            dst_port = int(getattr(ip_pkt[ICMP], "code", 0))
         else:
             proto = str(int(ip_pkt.proto))
 
         src_ip = str(ip_pkt.src)
         dst_ip = str(ip_pkt.dst)
+
+        # Avoid duplicate packet counting across Kubernetes veth + CNI bridge interfaces
+        pkt_sig = (src_ip, dst_ip, src_port, dst_port, seq_or_id, int(len(ip_pkt)))
+        with self._lock:
+            if pkt_sig in self._recent_pkt_sigs and seq_or_id != 0:
+                return
+            self._recent_pkt_sigs.append(pkt_sig)
+
         fwd_key: FlowKey = (src_ip, src_port, dst_ip, dst_port, proto)
         rev_key: FlowKey = (dst_ip, dst_port, src_ip, src_port, proto)
 
@@ -64,7 +81,6 @@ class FlowTable:
         flushed = 0
 
         with self._lock:
-            # operate on unique flows by iterating keys then de-duplicating by flow_id
             seen_flow_ids = set()
             for key, flow in list(self._by_key.items()):
                 if flow.flow_id in seen_flow_ids:
@@ -76,7 +92,6 @@ class FlowTable:
                 if idle >= settings.sensor_idle_timeout_seconds or active >= settings.sensor_active_timeout_seconds:
                     expired_keys.append(flow)
 
-            # remove both fwd and rev keys for expired flows
             for flow in expired_keys:
                 keys_to_del = [k for k, v in self._by_key.items() if v.flow_id == flow.flow_id]
                 for k in keys_to_del:
@@ -98,7 +113,24 @@ class FlowTable:
         return flushed
 
 
+def _resolve_interfaces(configured: str) -> Optional[str | List[str]]:
+    cfg = (configured or "any").strip()
+    if cfg.lower() in ("any", "all", "*"):
+        return None  # Scapy sniff(iface=None) captures on all interfaces on Linux
+    parts = [p.strip() for p in cfg.split(",") if p.strip()]
+    valid = [p for p in parts if os.path.exists(f"/sys/class/net/{p}")]
+    if not valid:
+        logger.warning("configured_interfaces_not_found=%s; falling back to all interfaces (any)", cfg)
+        return None
+    return valid[0] if len(valid) == 1 else valid
+
+
 def main() -> None:
+    if not settings.network_monitoring_enabled:
+        logger.info("network_monitoring_disabled")
+        while True:
+            time.sleep(60)
+
     producer = FlowProducer()
     table = FlowTable()
 
@@ -118,20 +150,8 @@ def main() -> None:
 
     threading.Thread(target=flusher, daemon=True).start()
 
-    iface = settings.sensor_interface
-    if iface.endswith("mon"):
-        logger.warning(
-            "interface=%s looks like WiFi monitor mode; this sensor expects IP packets on a managed interface (e.g. wlan0). See implementation.md",
-            iface,
-        )
-    if not os.path.exists(f"/sys/class/net/{iface}"):
-        logger.error(
-            "interface=%s not found. Run 'ip -br link' on the host and set SENSOR_INTERFACE in .env",
-            iface,
-        )
-        raise SystemExit(1)
-
-    logger.info("sniff_start iface=%s filter=%s", iface, settings.sensor_bpf_filter)
+    iface = _resolve_interfaces(settings.sensor_interface)
+    logger.info("sniff_start iface=%s filter=%s", iface or "any", settings.sensor_bpf_filter)
     sniff(iface=iface, filter=settings.sensor_bpf_filter, prn=on_pkt, store=False)
 
 
