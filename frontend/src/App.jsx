@@ -86,7 +86,7 @@ export default function App() {
 
   return (
     <div style={{ fontFamily: 'system-ui, -apple-system, Segoe UI, Roboto, sans-serif', padding: 16 }}>
-      <h1 style={{ margin: 0 }}>AI Anomaly IDS Dashboard</h1>
+      <h1 style={{ margin: 0 }}>Defendat SOC Dashboard</h1>
       <div style={{ marginTop: 6, color: '#374151' }}>
         Status: <b>{connected ? 'WebSocket connected' : 'disconnected'}</b>
       </div>

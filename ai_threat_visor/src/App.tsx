@@ -75,6 +75,15 @@ function App() {
   const [activeTab, setActiveTab] = React.useState('dashboard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = React.useState(false);
 
+  React.useEffect(() => {
+    document.title = 'Defendat SOC — AI IDS/IDP Platform';
+    const link = document.querySelector("link[rel~='icon']") as HTMLLinkElement | null;
+    if (link) {
+      link.type = 'image/svg+xml';
+      link.href = '/favicon.svg';
+    }
+  }, []);
+
   const lastAlertIdRef = React.useRef<string | null>(null);
 
   React.useEffect(() => {
@@ -245,9 +254,7 @@ function App() {
             </div>
 
             <div className="flex items-center gap-3">
-              <div className="p-1.5 bg-blue-500/10 rounded-md border border-blue-500/20">
-                <ShieldCheck className="w-5 h-5 text-blue-500" />
-              </div>
+              <img src="/defendat-logo.svg" alt="Defendat SOC" className="w-7 h-7" />
               <h2 className="text-lg lg:text-2xl font-bold text-white tracking-tight capitalize truncate">
                 {activeTab === 'idp'
                   ? 'IDP & Incident Correlation'
@@ -317,7 +324,7 @@ function App() {
                   <Info className="w-3 h-3 text-blue-500" />
                   <p className="font-semibold text-slate-400">MIVA Open University</p>
                 </div>
-                <p className="opacity-60 font-mono">© 2026 AI-NIDS Production. Abuja.</p>
+                <p className="opacity-60 font-mono">© 2026 Defendat SOC. Abuja.</p>
               </div>
             </footer>
           </div>

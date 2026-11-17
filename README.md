@@ -1,4 +1,4 @@
-# AI Anomaly IDS/IDP — Real-Time Server & Kubernetes Intrusion Detection and Prevention Platform
+# Defendat SOC — Real-Time Server & Kubernetes AI IDS/IDP Platform
 
 Production-grade, AI-powered Network, Linux Host, Kubernetes, and Application Intrusion Detection and Prevention System (`AI-IDS/IDP`).
 

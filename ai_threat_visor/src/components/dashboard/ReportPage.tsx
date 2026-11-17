@@ -56,7 +56,7 @@ function generateSecurityReportPdf(params: {
   const lines: Array<{ text: string; size: number; bold?: boolean; indent?: number }> = [];
   const nowStr = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
 
-  lines.push({ text: 'AI-IDS / IDP SECURITY INTELLIGENCE REPORT', size: 16, bold: true });
+  lines.push({ text: 'DEFENDAT SOC - SECURITY INTELLIGENCE REPORT', size: 16, bold: true });
   lines.push({ text: `Generated: ${nowStr}   |   Filter Range: ${params.rangeLabel} (${params.severityFilter.toUpperCase()})`, size: 9 });
   lines.push({ text: 'Researcher: Stephanas Osanebi Odogu   |   Supervisor: Dr. Oluwasegun I. Adelaiye   |   MIVA Open University', size: 9 });
   lines.push({ text: '----------------------------------------------------------------------------------------------------', size: 9 });
@@ -343,14 +343,14 @@ export function ReportPage({ alerts, stats }: ReportPageProps) {
       const a = document.createElement('a');
       const dateStamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
       a.href = url;
-      a.download = `AI-IDS-IDP-Security-Report-${dateStamp}.pdf`;
+      a.download = `Defendat-SOC-Security-Report-${dateStamp}.pdf`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
       toast.success('PDF Security Report Exported', {
-        description: `Downloaded AI-IDS-IDP-Security-Report-${dateStamp}.pdf (${filteredAlerts.length} alerts in range).`,
+        description: `Downloaded Defendat-SOC-Security-Report-${dateStamp}.pdf (${filteredAlerts.length} alerts in range).`,
       });
     } catch {
       toast.error('Failed to generate PDF report');

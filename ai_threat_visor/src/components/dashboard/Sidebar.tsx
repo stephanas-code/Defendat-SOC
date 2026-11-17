@@ -30,12 +30,14 @@ export function Sidebar({ activeTab, setActiveTab, isMobile, engineOnline = true
     >
       <div className="p-6 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="p-2 bg-blue-600 rounded-lg shadow-lg shadow-blue-900/20">
-            <Shield className="w-6 h-6 text-white" />
-          </div>
+          <img
+            src="/defendat-logo.svg"
+            alt="Defendat SOC Logo"
+            className="w-10 h-10 rounded-lg shadow-lg shadow-blue-900/20"
+          />
           <div>
-            <h1 className="text-lg font-bold text-white leading-none">AI-IDS / IDP</h1>
-            <p className="text-[10px] text-slate-400 uppercase tracking-widest mt-1 font-semibold">Active Defense SOC</p>
+            <h1 className="text-lg font-bold text-white leading-none">Defendat SOC</h1>
+            <p className="text-[10px] text-slate-400 uppercase tracking-widest mt-1 font-semibold">AI IDS / IDP Platform</p>
           </div>
         </div>
       </div>

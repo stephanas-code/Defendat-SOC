@@ -9,7 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=None, extra="ignore")
 
-    project_name: str = "ai-anomaly-ids-idp"
+    project_name: str = "Defendat SOC"
 
     # Kafka
     kafka_brokers: str = "kafka:9092"
