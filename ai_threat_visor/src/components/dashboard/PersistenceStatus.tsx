@@ -1,5 +1,5 @@
 import { Database, HardDrive, ShieldCheck, History, ArrowUpRight, Activity } from 'lucide-react';
-import { PersistenceStatus } from '../../types';
+import { PersistenceStatus, NetworkAlert } from '../../types';
 
 interface PersistenceProps {
   persistence: PersistenceStatus;
