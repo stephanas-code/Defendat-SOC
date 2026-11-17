@@ -58,7 +58,7 @@ function generateSecurityReportPdf(params: {
 
   lines.push({ text: 'DEFENDAT SOC - SECURITY INTELLIGENCE REPORT', size: 16, bold: true });
   lines.push({ text: `Generated: ${nowStr}   |   Filter Range: ${params.rangeLabel} (${params.severityFilter.toUpperCase()})`, size: 9 });
-  lines.push({ text: 'Researcher: Stephanas Osanebi Odogu   |   Supervisor: Dr. Oluwasegun I. Adelaiye   |   MIVA Open University', size: 9 });
+  lines.push({ text: 'Researcher: Stephanas Osanebi Odogu   |   MIVA Open University', size: 9 });
   lines.push({ text: '----------------------------------------------------------------------------------------------------', size: 9 });
 
   lines.push({ text: '1. EXECUTIVE SUMMARY', size: 12, bold: true });

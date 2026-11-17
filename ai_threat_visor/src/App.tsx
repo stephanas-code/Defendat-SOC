@@ -313,11 +313,6 @@ function App() {
                   <p className="font-bold text-slate-400 uppercase tracking-widest mb-1">RESEARCHER</p>
                   <p className="font-medium">Stephanas Osanebi Odogu</p>
                 </div>
-                <div className="h-8 w-px bg-slate-900 hidden sm:block" />
-                <div className="hidden sm:block">
-                  <p className="font-bold text-slate-400 uppercase tracking-widest mb-1">SUPERVISOR</p>
-                  <p className="font-medium">Dr. Oluwasegun I. Adelaiye</p>
-                </div>
               </div>
               <div className="text-center md:text-right">
                 <div className="flex items-center md:justify-end gap-2 mb-1">
