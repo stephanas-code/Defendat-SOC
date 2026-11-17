@@ -306,7 +306,25 @@ const toAlert = (item: ApiAlert): NetworkAlert => {
 
 export function useNetworkData() {
   const [alerts, setAlerts] = useState<NetworkAlert[]>([]);
-  const [isCapturing, setIsCapturing] = useState(true);
+  const [isCapturing, setIsCapturingState] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('defendat_soc_capturing');
+      return saved === null ? true : saved === 'true';
+    } catch {
+      return true;
+    }
+  });
+  const setIsCapturing = useCallback((val: boolean | ((prev: boolean) => boolean)) => {
+    setIsCapturingState((prev) => {
+      const next = typeof val === 'function' ? val(prev) : val;
+      try {
+        localStorage.setItem('defendat_soc_capturing', String(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }, []);
   const [backendStatus, setBackendStatus] = useState<ApiStatus | null>(null);
   const [idpStatus, setIdpStatus] = useState<IdpFullStatus | null>(null);
   const [incidents, setIncidents] = useState<CorrelatedIncident[]>([]);
@@ -374,9 +392,10 @@ export function useNetworkData() {
 
   useEffect(() => {
     refreshAll();
+    if (!isCapturing) return;
     const interval = window.setInterval(refreshAll, 5000);
     return () => window.clearInterval(interval);
-  }, [refreshAll]);
+  }, [refreshAll, isCapturing]);
 
   useEffect(() => {
     if (!isCapturing) {
